@@ -33,12 +33,13 @@ final class SessionStore {
             }
         }
 
+        // 只按时间预过滤、不按项目预过滤：缓存该时间范围的全部项目，
+        // 切项目时由 indexJSON 在内存里过滤（无需重扫）。
         let sinceDate = scopeHint.since.date
         let fm = FileManager.default
         var next: [SessionSummary] = []
         for (path, info) in files where info.kind == .main {
             let label = prettyProject(info.project)
-            if let p = scopeHint.projectLabel, label != p { continue }
             if let since = sinceDate,
                let attrs = try? fm.attributesOfItem(atPath: path),
                let modified = attrs[.modificationDate] as? Date,
@@ -150,7 +151,31 @@ final class SessionStore {
         matched.sort { (a, b) in (a.lastTs ?? .distantPast) > (b.lastTs ?? .distantPast) }
         let capped = Array(matched.prefix(scope.maxSessions))
         return topJSON(scope: scope, totalMatched: matched.count, shown: capped.count,
-                       controlsProjects: projects, sessions: capped.map { $0.toDict() })
+                       controlsProjects: projects, sessions: capped.map { $0.toDict() },
+                       matched: matchedAggregate(matched))
+    }
+
+    // 概览统计：对「命中池全量」（未受 maxSessions 截断）求聚合，前端概览直接用，
+    // 不再受「加载更多」影响。
+    private func matchedAggregate(_ list: [SessionSummary]) -> [String: Any] {
+        var turns = 0, tools = 0, tokens = 0
+        var minTs: Date? = nil, maxTs: Date? = nil
+        var byProj: [String: Int] = [:]
+        for s in list {
+            turns += s.numUser
+            tools += s.numTools
+            tokens += s.usage.total
+            if let f = s.firstTs { minTs = min(minTs ?? f, f) }
+            if let l = s.lastTs { maxTs = max(maxTs ?? l, l) }
+            byProj[s.projectLabel, default: 0] += 1
+        }
+        let projects = byProj.sorted { $0.value > $1.value }.map { [$0.key, $0.value] as [Any] }
+        return [
+            "turns": turns, "tools": tools, "tokens": tokens,
+            "span_start": minTs.map(isoString) ?? NSNull(),
+            "span_end": maxTs.map(isoString) ?? NSNull(),
+            "projects": projects,
+        ]
     }
 
     // 详情页按需解析单个 session，返回完整 Session JSON 文本。
@@ -257,9 +282,10 @@ final class SessionStore {
     }
 
     private func topJSON(scope: Scope, totalMatched: Int, shown: Int,
-                         controlsProjects: [String], sessions: [[String: Any]]) -> String {
+                         controlsProjects: [String], sessions: [[String: Any]],
+                         matched: [String: Any]? = nil) -> String {
         let sinceDate = scope.since.date
-        let scopeDict: [String: Any] = [
+        var scopeDict: [String: Any] = [
             "project": scope.projectLabel ?? NSNull(),
             "session": NSNull(),
             "since": sinceDate.map(isoString) ?? NSNull(),
@@ -267,6 +293,7 @@ final class SessionStore {
             "total_matched": totalMatched,
             "shown": shown,
         ]
+        if let matched = matched { scopeDict["matched"] = matched }
         let controls: [String: Any] = [
             "since": scope.since.rawValue,
             "project": scope.projectLabel ?? NSNull(),

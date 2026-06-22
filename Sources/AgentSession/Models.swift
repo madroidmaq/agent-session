@@ -141,9 +141,10 @@ struct Scope {
             }
         }
     }
+    static let defaultMaxSessions = 40
     var since: Since = .d7
     var projectLabel: String? = nil   // nil = 全部项目
-    var maxSessions: Int = 40
+    var maxSessions: Int = defaultMaxSessions
 }
 
 // ISO8601 带毫秒，形如 2026-06-22T01:31:23.003Z —— 与 JS Date.toISOString() 一致。

@@ -16,6 +16,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate,
     private var activeReloadSeq = 0
     private var detailRequestSeq = 0
     private var activeDetailRequestSeq = 0
+    // 摘要缓存覆盖到的时间下界：nil = 尚未加载；.some(nil) = 已加载全部；
+    // .some(date) = 缓存到 date 为止。请求范围比它更旧才需重扫。
+    private var loaded = false
+    private var loadedSinceDate: Date?
 
     override init() {
         let root = ("~/.claude/projects" as NSString).expandingTildeInPath
@@ -95,9 +99,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate,
             self.store.reload(scopeHint: currentScope)
             DispatchQueue.main.async {
                 guard token == self.activeReloadSeq else { return }
+                self.loaded = true
+                self.loadedSinceDate = currentScope.since.date
                 self.refreshUI()
             }
         }
+    }
+
+    // 当前摘要缓存是否已覆盖请求的时间范围（覆盖则切换只需内存过滤、无需重扫）。
+    private func cacheCovers(_ since: Scope.Since) -> Bool {
+        guard loaded else { return false }
+        guard let cached = loadedSinceDate else { return true }   // 已缓存全部
+        guard let req = since.date else { return false }          // 请求全部、缓存仅部分
+        return req >= cached                                       // 请求范围更窄或相等
     }
 
     // 重扫后：若当前选中的项目已不存在则回退到“全部项目”，再重新注入
@@ -182,7 +196,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate,
         if message.name == "scope" {
             if let s = body["since"] as? String, let v = Scope.Since(rawValue: s) { scope.since = v }
             scope.projectLabel = body["project"] as? String   // null / 缺省 → nil（全部项目）
-            reloadInBackground()
+            if let limit = (body["limit"] as? NSNumber)?.intValue {
+                // 「加载更多」：仅扩大分页上限，复用内存里的摘要重新注入，无需重扫磁盘。
+                scope.maxSessions = limit
+                inject()
+            } else {
+                // 时间 / 项目筛选变化：重置分页。缓存已覆盖该范围则只内存过滤+注入，
+                // 否则重扫（仅在请求更旧数据时发生）。
+                scope.maxSessions = Scope.defaultMaxSessions
+                if cacheCovers(scope.since) { inject() } else { reloadInBackground() }
+            }
         } else if message.name == "sessionDetail", let id = body["id"] as? String {
             let token = (body["token"] as? NSNumber)?.intValue ?? 0
             loadDetailInBackground(id: id, frontendToken: token)
