@@ -1,0 +1,13 @@
+# SwiftPM 构建产物
+.build/
+
+# 打包产物（由 build.sh / make-dmg.sh 生成）
+AgentSession.app/
+AgentSession.dmg
+
+# icon 中间产物
+icon/AppIcon.iconset/
+icon/preview.png
+
+# macOS
+.DS_Store
