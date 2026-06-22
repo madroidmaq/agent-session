@@ -21,6 +21,19 @@ struct ParsedFile {
     var agentIdToTurnIndex: [String: Int] = [:]
 }
 
+struct ParsedSummary {
+    var skills: [String] = []          // 保持插入顺序去重
+    var firstTs: Date?
+    var lastTs: Date?
+    var cwd: String?
+    var gitBranch: String?
+    var numUser = 0
+    var numAssistant = 0
+    var numTools = 0
+    var usage = Usage()
+    var preview: String = "(no text prompt)"
+}
+
 struct FileInfo {
     let project: String
     let sessionId: String
@@ -81,6 +94,110 @@ final class TranscriptParser {
     }
 
     // MARK: - 主解析
+
+    func parseSummaryFile(_ path: String) -> ParsedSummary {
+        var p = ParsedSummary()
+        guard let content = try? String(contentsOfFile: path, encoding: .utf8) else { return p }
+
+        var skillSet = Set<String>()
+        // usage 按 requestId 去重，保留 output 最大的那条（流式响应会发多行）
+        var usageByReq: [String: Usage] = [:]
+        var hasPreview = false
+
+        func appendSkill(_ skill: String) {
+            skillSet.insert(skill)
+            if !p.skills.contains(skill) { p.skills.append(skill) }
+        }
+        func setPreview(_ text: String) {
+            guard !hasPreview else { return }
+            let one = re(text, #"\s+"#, " ").trimmingCharacters(in: .whitespaces)
+            guard !one.isEmpty else { return }
+            p.preview = one.utf16.count > 160 ? substringUTF16(one, 157) + "…" : one
+            hasPreview = true
+        }
+        func handleSummaryUserText(_ raw: String) {
+            if isNoiseUserText(raw) { return }
+            let cleaned = cleanUserText(raw)
+            if let cmd = slashFrom(raw) {
+                appendSkill(cmd)
+                setPreview("/" + cmd)
+                p.numUser += 1
+            } else if !cleaned.isEmpty {
+                setPreview(cleaned)
+                p.numUser += 1
+            }
+        }
+
+        for line in content.split(separator: "\n", omittingEmptySubsequences: false) {
+            if line.isEmpty { continue }
+            guard let data = line.data(using: .utf8),
+                  let e = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            else { continue }
+
+            if let uuid = e["uuid"] as? String {
+                if seenUuids.contains(uuid) { continue }
+                seenUuids.insert(uuid)
+            }
+            if let c = e["cwd"] as? String, p.cwd == nil { p.cwd = c }
+            if let g = e["gitBranch"] as? String, p.gitBranch == nil { p.gitBranch = g }
+            if let ts = parseTimestamp(e["timestamp"] as? String) {
+                if p.firstTs == nil { p.firstTs = ts }
+                p.lastTs = ts
+            }
+            let type = e["type"] as? String
+            let message = e["message"] as? [String: Any]
+
+            if type == "user" {
+                let isMeta = (e["isMeta"] as? NSNumber)?.boolValue ?? false
+                let isCompact = (e["isCompactSummary"] as? NSNumber)?.boolValue ?? false
+                if isMeta || isCompact { continue }
+
+                let content = message?["content"]
+                if let str = content as? String {
+                    handleSummaryUserText(str)
+                } else if let blocks = content as? [Any] {
+                    for case let b as [String: Any] in blocks where (b["type"] as? String) == "text" {
+                        handleSummaryUserText(b["text"] as? String ?? "")
+                    }
+                }
+                continue
+            }
+
+            if type == "assistant" {
+                if let u = message?["usage"] as? [String: Any] {
+                    let rid = (e["requestId"] as? String) ?? (e["uuid"] as? String) ?? "row\(p.numAssistant + p.numTools)"
+                    var rec = Usage()
+                    rec.inputUncached = (u["input_tokens"] as? NSNumber)?.intValue ?? 0
+                    rec.cacheCreate = (u["cache_creation_input_tokens"] as? NSNumber)?.intValue ?? 0
+                    rec.cacheRead = (u["cache_read_input_tokens"] as? NSNumber)?.intValue ?? 0
+                    rec.output = (u["output_tokens"] as? NSNumber)?.intValue ?? 0
+                    if let prev = usageByReq[rid], prev.output > rec.output {} else { usageByReq[rid] = rec }
+                }
+                guard let blocks = message?["content"] as? [Any] else { continue }
+                for case let b as [String: Any] in blocks {
+                    let bt = b["type"] as? String
+                    if bt == "text", let t = b["text"] as? String, !t.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        p.numAssistant += 1
+                    } else if bt == "tool_use" {
+                        if let name = b["name"] as? String, name == "Skill",
+                           let inp = b["input"] as? [String: Any], let sk = inp["skill"] as? String {
+                            appendSkill(sk)
+                        }
+                        p.numTools += 1
+                    }
+                }
+                continue
+            }
+        }
+
+        for r in usageByReq.values {
+            p.usage.inputUncached += r.inputUncached
+            p.usage.cacheCreate += r.cacheCreate
+            p.usage.cacheRead += r.cacheRead
+            p.usage.output += r.output
+        }
+        return p
+    }
 
     func parseFile(_ path: String) -> ParsedFile {
         var p = ParsedFile()

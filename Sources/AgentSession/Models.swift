@@ -29,6 +29,58 @@ struct Usage {
     }
 }
 
+struct SubagentRef {
+    var path: String
+    var agentId: String?
+    var agentType: String?
+}
+
+// 首屏列表 / 概览只需要摘要字段；完整 turns 与 subagent 内容点击详情时再解析。
+struct SessionSummary {
+    var id: String
+    var project: String
+    var projectLabel: String
+    var mainPath: String
+    var subagents: [SubagentRef]
+    var cwd: String?
+    var gitBranch: String?
+    var firstTs: Date?
+    var lastTs: Date?
+    var numUser: Int
+    var numAssistant: Int
+    var numTools: Int
+    var usage: Usage
+    var skills: [String]
+    var preview: String
+
+    var numSubagents: Int { subagents.count }
+
+    func toDict() -> [String: Any] {
+        let durMs: Int = {
+            guard let a = firstTs, let b = lastTs else { return 0 }
+            return Int(((b.timeIntervalSince1970 - a.timeIntervalSince1970) * 1000).rounded())
+        }()
+        return [
+            "id": id,
+            "project": project,
+            "project_label": projectLabel,
+            "cwd": cwd ?? NSNull(),
+            "git_branch": gitBranch ?? NSNull(),
+            "first_ts": firstTs.map(isoString) ?? NSNull(),
+            "last_ts": lastTs.map(isoString) ?? NSNull(),
+            "duration_ms": durMs,
+            "num_user_msgs": numUser,
+            "num_assistant_msgs": numAssistant,
+            "num_tool_calls": numTools,
+            "num_subagents": numSubagents,
+            "usage": usage.toDict(),
+            "skills": skills,
+            "preview": preview,
+            "detail_loaded": false,
+        ]
+    }
+}
+
 // 一个会话（main transcript + 已关联的 subagent）。可过滤字段保留为强类型，
 // 完整 JSON 通过 toDict() 产出。
 struct Session {

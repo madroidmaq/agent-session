@@ -488,6 +488,7 @@
   const HAS_INITIAL = Array.isArray(DATA.sessions) && DATA.sessions.length > 0;
   if (!Array.isArray(DATA.sessions)) DATA.sessions = [];
   let byId = {};
+  let detailToken = 0;
   const leftEl = document.getElementById('pane-left');
   const centerEl = document.getElementById('pane-center');
   const rightEl = document.getElementById('pane-right');
@@ -880,13 +881,38 @@
   // ——— detail view: tab bar + center conversation + right tool pane ———
   let ACTIVE = null; // { id, session, agents, subKeyOf, tab }
 
+  const hasDetail = s => s && Array.isArray(s.turns);
+  function requestDetail(id, s) {
+    const mh = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.sessionDetail;
+    if (!mh) return false;
+    const token = ++detailToken;
+    s.__detail_loading = true;
+    s.__detail_token = token;
+    mh.postMessage({ id, token });
+    return true;
+  }
+
   function renderDetail(id) {
     const s = byId[id];
     if (!s) { centerEl.innerHTML = '<div class="empty">未找到该会话。</div>'; rightEl.innerHTML = ''; return; }
     setPath((s.cwd || s.project_label) + ' — ' + id.slice(0, 8));
+    highlightSidebar(id);
+    if (!hasDetail(s)) {
+      ACTIVE = { id, session: s, agents: [], subKeyOf: new Map(), tab: 'main', pending: true };
+      if ((!s.__detail_loading || s.__detail_token !== detailToken) && !s.__detail_failed) requestDetail(id, s);
+      const msg = s.__detail_loading ? '正在加载详情…'
+        : (s.__detail_failed ? '详情加载失败，请稍后刷新重试。' : '当前环境无法请求完整详情。');
+      centerEl.innerHTML = `<div class="dhead"><div class="crumbs">${esc(s.project_label)} / ${esc(s.id)}</div>`
+        + `<h1>${esc(s.preview)}</h1></div><hr class="hr">`
+        + `<div class="empty">${msg}</div>`;
+      rightEl.innerHTML = '';
+      shell.classList.remove('show-right');
+      setInfoActive(false);
+      centerEl.scrollTop = 0;
+      return;
+    }
     const { agents, subKeyOf } = collectAgents(s);
     ACTIVE = { id, session: s, agents, subKeyOf, tab: 'main' };
-    highlightSidebar(id);
     renderTab('main');
   }
 
@@ -1188,12 +1214,32 @@
   // App 注入入口：原生壳运行时调用它喂入最新数据。
   // template 因此既能当独立网页（#session-data 内嵌），也能被 App 注入。
   window.__agentSession = {
-    load(jsonText) {
+    loadIndex(jsonText) {
       DATA = JSON.parse(jsonText);
       if (!Array.isArray(DATA.sessions)) DATA.sessions = [];
       rebuildIndex();
       renderSidebar();
       route();
+    },
+    // Backward-compatible alias for standalone/generated pages that still call load().
+    load(jsonText) { this.loadIndex(jsonText); },
+    loadDetail(id, jsonText, token) {
+      const s = byId[id];
+      if (!s || token !== s.__detail_token || location.hash !== '#s/' + id) return;
+      if (!jsonText) {
+        s.__detail_loading = false;
+        s.__detail_failed = true;
+        renderDetail(id);
+        return;
+      }
+      const detail = JSON.parse(jsonText);
+      detail.__detail_loading = false;
+      detail.__detail_failed = false;
+      detail.__detail_token = token;
+      byId[id] = detail;
+      const idx = DATA.sessions.findIndex(x => x.id === id);
+      if (idx >= 0) DATA.sessions[idx] = detail;
+      renderDetail(id);
     },
     toggleInfo
   };

@@ -11,6 +11,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate,
     private var scope = Scope()
     private var webReady = false
     private var pendingInject = false
+    private let loadQueue = DispatchQueue(label: "dev.madroid.agentsession.load", qos: .userInitiated)
+    private var reloadSeq = 0
+    private var activeReloadSeq = 0
+    private var detailRequestSeq = 0
+    private var activeDetailRequestSeq = 0
 
     override init() {
         let root = ("~/.claude/projects" as NSString).expandingTildeInPath
@@ -39,8 +44,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate,
         config.userContentController.addUserScript(WKUserScript(
             source: "document.documentElement.classList.add('native');",
             injectionTime: .atDocumentStart, forMainFrameOnly: true))
-        // 侧栏的时间范围 / 项目下拉通过这条桥回调，更新 scope 后重新过滤注入。
+        // 侧栏的时间范围 / 项目下拉通过这条桥回调，更新 scope 后重新加载摘要索引。
         config.userContentController.add(self, name: "scope")
+        // 详情页按需请求完整 turns / subagents，避免启动时解析全量历史。
+        config.userContentController.add(self, name: "sessionDetail")
 
         webView = WKWebView(frame: .zero, configuration: config)
         webView.navigationDelegate = self
@@ -79,9 +86,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate,
     // MARK: - 数据流
 
     private func reloadInBackground() {
-        DispatchQueue.global(qos: .userInitiated).async {
-            self.store.reload()
-            DispatchQueue.main.async { self.refreshUI() }
+        let currentScope = scope
+        reloadSeq += 1
+        let token = reloadSeq
+        activeReloadSeq = token
+        activeDetailRequestSeq += 1
+        loadQueue.async {
+            self.store.reload(scopeHint: currentScope)
+            DispatchQueue.main.async {
+                guard token == self.activeReloadSeq else { return }
+                self.refreshUI()
+            }
         }
     }
 
@@ -94,12 +109,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate,
         inject()
     }
 
-    // 把当前 scope 的 JSON 注入网页（仅内存过滤，秒级）。
+    // 把当前 scope 的摘要 JSON 注入网页；完整详情由页面按需请求。
     private func inject() {
         guard webReady else { pendingInject = true; return }
-        let json = store.json(scope: scope)
-        webView.evaluateJavaScript("window.__agentSession && window.__agentSession.load(\(jsStringLiteral(json)));",
+        let json = store.indexJSON(scope: scope)
+        webView.evaluateJavaScript("window.__agentSession && window.__agentSession.loadIndex(\(jsStringLiteral(json)));",
                                    completionHandler: nil)
+    }
+
+    private func loadDetailInBackground(id: String, frontendToken: Int) {
+        detailRequestSeq += 1
+        let token = detailRequestSeq
+        activeDetailRequestSeq = token
+        loadQueue.async {
+            let json = self.store.detailJSON(id: id)
+            DispatchQueue.main.async {
+                guard token == self.activeDetailRequestSeq else { return }
+                let payload = json.map(jsStringLiteral) ?? "null"
+                self.webView.evaluateJavaScript(
+                    "window.__agentSession && window.__agentSession.loadDetail(\(jsStringLiteral(id)), \(payload), \(frontendToken));",
+                    completionHandler: nil)
+            }
+        }
     }
 
     private func startWatching() {
@@ -144,13 +175,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate,
 
     @objc func refresh() { reloadInBackground() }
 
-    // 侧栏下拉回调：{ since, project } → 更新 scope → 重新过滤注入。
-    // 「详细」已是页内按钮（直接调 JS），不再走原生。
+    // 侧栏下拉回调：{ since, project } → 更新 scope → 重新加载摘要索引。
+    // 详情页通过 sessionDetail 按需请求完整 turns / subagents。
     func userContentController(_ uc: WKUserContentController, didReceive message: WKScriptMessage) {
-        guard message.name == "scope", let body = message.body as? [String: Any] else { return }
-        if let s = body["since"] as? String, let v = Scope.Since(rawValue: s) { scope.since = v }
-        scope.projectLabel = body["project"] as? String   // null / 缺省 → nil（全部项目）
-        inject()
+        guard let body = message.body as? [String: Any] else { return }
+        if message.name == "scope" {
+            if let s = body["since"] as? String, let v = Scope.Since(rawValue: s) { scope.since = v }
+            scope.projectLabel = body["project"] as? String   // null / 缺省 → nil（全部项目）
+            reloadInBackground()
+        } else if message.name == "sessionDetail", let id = body["id"] as? String {
+            let token = (body["token"] as? NSNumber)?.intValue ?? 0
+            loadDetailInBackground(id: id, frontendToken: token)
+        }
     }
     @objc func toggleInfo() {
         webView.evaluateJavaScript(

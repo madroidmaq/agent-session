@@ -7,7 +7,7 @@ import Cocoa
 if CommandLine.arguments.contains("--dump-json") {
     let root = ("~/.claude/projects" as NSString).expandingTildeInPath
     let store = SessionStore(root: root)
-    store.reload()
+    store.reloadFull()
     var scope = Scope()
     scope.since = .all
     scope.maxSessions = Int.max
