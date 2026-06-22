@@ -10,9 +10,7 @@ three-pane reading UI (session list / conversation thread / tool details) via WK
 ![Swift](https://img.shields.io/badge/Swift-5.9-orange)
 ![License](https://img.shields.io/badge/license-MIT-blue)
 
-<!-- 📸 Drop a screenshot at docs/screenshot.png and uncomment the line below. -->
-<!-- ![AgentSession](docs/screenshot.png) -->
-> _Screenshot coming soon — a still of the three-pane reader._
+![AgentSession — three-pane reader for Claude Code sessions](docs/screenshot.png)
 
 ## Features
 

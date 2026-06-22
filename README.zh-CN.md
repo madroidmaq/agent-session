@@ -9,9 +9,7 @@
 ![Swift](https://img.shields.io/badge/Swift-5.9-orange)
 ![License](https://img.shields.io/badge/license-MIT-blue)
 
-<!-- 📸 把截图放到 docs/screenshot.png，然后取消下一行注释。 -->
-<!-- ![AgentSession](docs/screenshot.png) -->
-> _截图待补 —— 一张三栏阅读界面的静态图。_
+![AgentSession —— Claude Code 会话的三栏阅读界面](docs/screenshot.png)
 
 ## 特性
 

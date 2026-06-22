@@ -9,5 +9,8 @@ AgentSession.dmg
 icon/AppIcon.iconset/
 icon/preview.png
 
+# 截图用的临时 demo 页（由 docs/make-demo.mjs 生成）
+docs/demo.html
+
 # macOS
 .DS_Store
