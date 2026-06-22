@@ -1,60 +1,95 @@
 # AgentSession
 
-一个自包含的原生 macOS App，用来回看 Claude Code 的会话记录。读取 `~/.claude/projects`
-下的 JSONL transcript，用 WKWebView 渲染三栏阅读界面（会话列表 / 对话主线 / 工具详情）。
+A self-contained native macOS app for reading back your **Claude Code** session history.
+It reads the JSONL transcripts under `~/.claude/projects` and renders them in a clean
+three-pane reading UI (session list / conversation thread / tool details) via WKWebView.
 
-由 [session-viewer skill](../madroid-skills/plugin/skills/session-viewer) 的网页版演进而来：
-- **纯 Swift 解析**，不依赖 node —— 启动即扫描，运行时把数据注入 WebView（不再生成 11MB HTML 快照）。
-- **原生工具栏**：时间范围（7天/24小时/30天/全部）、项目筛选、刷新。
-- **文件监听自动刷新**：FSEvents 监听 `~/.claude/projects`，有新消息约 1s 内自动重载（保持当前选中）。
+[简体中文](README.zh-CN.md)
 
-## 构建 & 运行
+![Platform](https://img.shields.io/badge/platform-macOS%2012%2B-black)
+![Swift](https://img.shields.io/badge/Swift-5.9-orange)
+![License](https://img.shields.io/badge/license-MIT-blue)
+
+<!-- 📸 Drop a screenshot at docs/screenshot.png and uncomment the line below. -->
+<!-- ![AgentSession](docs/screenshot.png) -->
+> _Screenshot coming soon — a still of the three-pane reader._
+
+## Features
+
+- **Pure-Swift parsing**, no Node required — scans on launch and injects data straight
+  into the WebView (no more 11 MB generated HTML snapshots).
+- **Three-pane reader** — session list, conversation thread, and per-tool details.
+- **Sidebar filters** — time range (7d / 24h / 30d / all) and per-project filtering.
+- **Live auto-refresh** — FSEvents watches `~/.claude/projects`; new messages reload in
+  ~1s while keeping your current selection.
+- **Native dark chrome** — dark unified titlebar that blends into the content.
+
+## Privacy
+
+AgentSession is **fully local and read-only**. It only reads `~/.claude/projects` on your
+machine — it makes no network calls and uploads nothing.
+
+## Install
+
+### Download (recommended)
+
+Grab the latest `AgentSession.dmg` from the
+[Releases](https://github.com/madroid/agent-session/releases/latest) page, open it, and drag
+**AgentSession** into **Applications**.
+
+> The build is ad-hoc signed and not notarized yet, so on first launch use
+> **right-click → Open** to get past Gatekeeper.
+
+### Build from source
 
 ```sh
-./build.sh                 # swift build -c release + 打包 AgentSession.app + ad-hoc 签名
+./build.sh                 # swift build -c release + package AgentSession.app + ad-hoc sign
 open AgentSession.app
+./make-dmg.sh              # optional: produce a draggable AgentSession.dmg
 ```
 
-开发期也可直接：`swift build && swift run`。
+During development you can also just run: `swift build && swift run`.
 
-快捷键：`⌘R` 刷新、`⌘Q` 退出、`⌘C/⌘A` 复制/全选。
+Shortcuts: `⌘R` refresh · `⌘Q` quit · `⌘C/⌘A` copy/select-all.
 
-## 架构
+## Architecture
 
-| 文件 | 职责 |
+| File | Responsibility |
 |---|---|
-| `Sources/AgentSession/main.swift` | 启动入口；`--dump-json` headless 模式打印全量 JSON（验证/脚本用） |
-| `AppDelegate.swift` | 窗口 / WKWebView / NSToolbar / 菜单 / 加载时序与数据注入 |
-| `TranscriptParser.swift` | JSONL → 结构化数据（1:1 移植自 `extract-session.mjs`） |
-| `Models.swift` | `Session` / `Usage` / `Scope`，`toDict()` 产出与网页一致的 JSON schema |
-| `SessionStore.swift` | 全量扫描+缓存、按 scope 内存过滤、序列化 |
-| `FileWatcher.swift` | FSEvents 监听 + 防抖 |
-| `Resources/template.html` | 渲染层（复用网页版；加了 `window.__agentSession.load()` 注入入口，向后兼容仍可当独立网页） |
+| `Sources/AgentSession/main.swift` | Entry point; `--dump-json` headless mode prints the full JSON (for validation/scripts) |
+| `AppDelegate.swift` | Window / WKWebView / NSToolbar / menu / load sequencing & data injection |
+| `TranscriptParser.swift` | JSONL → structured data |
+| `Models.swift` | `Session` / `Usage` / `Scope`; `toDict()` emits the JSON schema the web layer expects |
+| `SessionStore.swift` | Full scan + cache, in-memory filtering by scope, serialization |
+| `FileWatcher.swift` | FSEvents watching + debounce |
+| `Resources/template.html` | Render layer; exposes `window.__agentSession.load()` as the injection entry point (stays backward-compatible as a standalone web page) |
 
-数据流：启动 → 后台全量解析缓存 → WebView 加载 template → 注入当前 scope 的 JSON。
-切换工具栏只在内存过滤+重注入（秒级，不重扫盘）；文件变化才后台重扫。
+Data flow: launch → background full parse & cache → WebView loads `template.html` → inject
+the JSON for the current scope. Changing a filter only does in-memory filtering + re-injection
+(sub-second, no disk rescan); a file change triggers a background rescan.
 
-## 与 session-viewer skill 的关系
+## Validation
 
-- 解析逻辑移植自 `extract-session.mjs`，二者是**两套需手动同步**的实现。
-  正确性靠 golden 对照保证：`AgentSession --dump-json` 的输出与 `node extract-session.mjs --session <id>`
-  对同一静止会话逐字段一致（已验证）。
-- `template.html` 是从 skill 版复制的副本，独立演进；设计改进需手动 port。
-
-## 验证
+The parser is a port of an upstream `extract-session.mjs` web skill (not included in this
+repo). Correctness is held with a golden comparison — for any settled (no longer changing)
+session, `AgentSession --dump-json` matches `node extract-session.mjs --session <id>`
+field-by-field:
 
 ```sh
-# golden 对照：选一个已结束（不再变化）的 session
 ID=<sessionId>
-node ../madroid-skills/plugin/skills/session-viewer/extract-session.mjs --session "$ID" \
+node /path/to/extract-session.mjs --session "$ID" \
   | jq -S --arg id "$ID" '.sessions[]|select(.id==$id)' > /tmp/g.json
 .build/release/AgentSession --dump-json \
   | jq -S --arg id "$ID" '.sessions[]|select(.id==$id)' > /tmp/s.json
-diff /tmp/g.json /tmp/s.json   # 期望无差异
+diff /tmp/g.json /tmp/s.json   # expect no diff
 ```
 
-## 已知边界 / 后续
+## Known limitations / Roadmap
 
-- 分发给他人需 notarize（当前仅 ad-hoc 签名，本地运行）。
-- App 图标暂用默认，可后续加 `.icns`。
-- tool_result 内容恰为 JSON 对象时，其 key 顺序可能与网页版不同（无序序列化，纯展示无影响）。
+- Distribution to others needs notarization (currently ad-hoc signed for local use).
+- When a `tool_result` body is itself a JSON object, its key order may differ from the web
+  version (unordered serialization; display-only, no functional impact).
+
+## License
+
+[MIT](LICENSE) © madroid
