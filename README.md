@@ -32,7 +32,7 @@ machine — it makes no network calls and uploads nothing.
 ### Download (recommended)
 
 Grab the latest `AgentSession.dmg` from the
-[Releases](https://github.com/madroid/agent-session/releases/latest) page, open it, and drag
+[Releases](https://github.com/madroidmaq/agent-session/releases/latest) page, open it, and drag
 **AgentSession** into **Applications**.
 
 > The build is ad-hoc signed and not notarized yet, so on first launch use

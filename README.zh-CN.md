@@ -27,7 +27,7 @@ AgentSession **纯本地、只读**。仅读取本机的 `~/.claude/projects`，
 
 ### 下载（推荐）
 
-到 [Releases](https://github.com/madroid/agent-session/releases/latest) 下载最新的
+到 [Releases](https://github.com/madroidmaq/agent-session/releases/latest) 下载最新的
 `AgentSession.dmg`，打开后把 **AgentSession** 拖进 **Applications** 即可。
 
 > 当前为 ad-hoc 签名、未做公证，首次打开请用**右键 → 打开**绕过 Gatekeeper。
