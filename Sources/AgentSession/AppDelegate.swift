@@ -21,6 +21,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate,
     private var loaded = false
     private var loadedSinceDate: Date?
 
+    private let paneLeftWidthKey = "AgentSessionPaneLeftWidth"
+    private let paneRightWidthKey = "AgentSessionPaneRightWidth"
+    private let paneLeftDefault = 256
+    private let paneRightDefault = 360
+    private let paneLeftMin = 200
+    private let paneLeftMax = 420
+    private let paneRightMin = 280
+    private let paneRightMax = 640
+
     override init() {
         let root = ("~/.claude/projects" as NSString).expandingTildeInPath
         store = SessionStore(root: root)
@@ -52,6 +61,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate,
         config.userContentController.add(self, name: "scope")
         // 详情页按需请求完整 turns / subagents，避免启动时解析全量历史。
         config.userContentController.add(self, name: "sessionDetail")
+        // 左右侧栏宽度是纯 UI 偏好，由页面拖拽、原生 UserDefaults 持久化。
+        config.userContentController.add(self, name: "paneLayout")
 
         webView = WKWebView(frame: .zero, configuration: config)
         webView.navigationDelegate = self
@@ -84,6 +95,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate,
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         webReady = true
+        injectPaneLayout()
         if pendingInject { pendingInject = false; inject() }
     }
 
@@ -129,6 +141,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate,
         let json = store.indexJSON(scope: scope)
         webView.evaluateJavaScript("window.__agentSession && window.__agentSession.loadIndex(\(jsStringLiteral(json)));",
                                    completionHandler: nil)
+    }
+
+    private func clamp(_ value: Int, min minValue: Int, max maxValue: Int) -> Int {
+        min(max(value, minValue), maxValue)
+    }
+
+    private func paneWidths() -> (left: Int, right: Int) {
+        let defaults = UserDefaults.standard
+        let left = defaults.object(forKey: paneLeftWidthKey) as? Int ?? paneLeftDefault
+        let right = defaults.object(forKey: paneRightWidthKey) as? Int ?? paneRightDefault
+        return (clamp(left, min: paneLeftMin, max: paneLeftMax),
+                clamp(right, min: paneRightMin, max: paneRightMax))
+    }
+
+    private func injectPaneLayout() {
+        guard webReady else { return }
+        let widths = paneWidths()
+        webView.evaluateJavaScript(
+            "window.__agentSession && window.__agentSession.setPaneLayout && window.__agentSession.setPaneLayout(\(widths.left), \(widths.right));",
+            completionHandler: nil)
+    }
+
+    private func savePaneLayout(_ body: [String: Any]) {
+        guard let leftNumber = body["left"] as? NSNumber,
+              let rightNumber = body["right"] as? NSNumber else { return }
+        let left = clamp(leftNumber.intValue, min: paneLeftMin, max: paneLeftMax)
+        let right = clamp(rightNumber.intValue, min: paneRightMin, max: paneRightMax)
+        let defaults = UserDefaults.standard
+        defaults.set(left, forKey: paneLeftWidthKey)
+        defaults.set(right, forKey: paneRightWidthKey)
     }
 
     private func loadDetailInBackground(id: String, frontendToken: Int) {
@@ -209,6 +251,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate,
         } else if message.name == "sessionDetail", let id = body["id"] as? String {
             let token = (body["token"] as? NSNumber)?.intValue ?? 0
             loadDetailInBackground(id: id, frontendToken: token)
+        } else if message.name == "paneLayout" {
+            savePaneLayout(body)
         }
     }
     @objc func toggleInfo() {

@@ -29,6 +29,9 @@
     --subtle: rgb(96,96,96);
     --red: rgb(232,103,121);
     --green: rgb(95,184,120);
+    --pane-left-width: 256px;
+    --pane-right-width: 360px;
+    --pane-resizer-width: 8px;
     --mono: 'JetBrains Mono', 'SF Mono', ui-monospace, Menlo, Monaco, monospace;
     --serif: 'Newsreader', Georgia, 'Songti SC', 'Noto Serif CJK SC', serif;
   }
@@ -93,16 +96,32 @@
   /* ——— three-pane shell ——— */
   /* the right (tool) pane is collapsed by default — it slides open only when a
      tool anchor in the middle column is clicked (see .show-right). */
-  .shell { flex: 1; display: grid; grid-template-columns: 256px 1fr 0px; min-height: 0;
-           transition: grid-template-columns .2s ease; }
-  .shell.show-right { grid-template-columns: 256px 1fr 360px; }
-  .pane-left  { border-right: 1px solid var(--outline); overflow: auto; min-height: 0;
+  .shell { flex: 1; display: grid;
+           grid-template-columns: var(--pane-left-width) var(--pane-resizer-width) minmax(0, 1fr) 0px 0px;
+           min-height: 0; transition: grid-template-columns .2s ease; }
+  .shell.show-right {
+    grid-template-columns: var(--pane-left-width) var(--pane-resizer-width) minmax(0, 1fr) var(--pane-resizer-width) var(--pane-right-width);
+  }
+  .shell.resizing { transition: none; cursor: col-resize; }
+  .shell.resizing, .shell.resizing * { user-select: none; }
+  .pane-left  { grid-column: 1; border-right: 1px solid var(--outline); overflow: auto; min-height: 0;
                 display: flex; flex-direction: column; }
-  .pane-center{ overflow: auto; min-height: 0; padding: 20px 30px 48px; }
-  .pane-right { overflow: hidden; min-width: 0; min-height: 0;
+  .pane-center{ grid-column: 3; overflow: auto; min-height: 0; padding: 20px 30px 48px; }
+  .pane-right { grid-column: 5; overflow: hidden; min-width: 0; min-height: 0;
                 padding: 0; background: rgba(0,0,0,0.10); }
   .shell.show-right .pane-right { border-left: 1px solid var(--outline); overflow: auto;
                                   padding: 14px 14px 48px; }
+  .pane-resizer { min-width: 0; cursor: col-resize; position: relative; background: var(--term-bg);
+                  z-index: 4; touch-action: none; }
+  .pane-resizer.left { grid-column: 2; }
+  .pane-resizer.right { grid-column: 4; opacity: 0; pointer-events: none; }
+  .shell.show-right .pane-resizer.right { opacity: 1; pointer-events: auto; }
+  .pane-resizer::before { content: ''; position: absolute; top: 0; bottom: 0; left: 50%; width: 1px;
+                          transform: translateX(-50%); background: var(--outline);
+                          transition: background .12s, box-shadow .12s; }
+  .pane-resizer:hover::before, .pane-resizer.dragging::before {
+    background: var(--clay); box-shadow: 0 0 0 1px rgba(217,119,87,0.16);
+  }
 
   /* ——— left pane: project-grouped session list ——— */
   .side-head { padding: 14px 14px 10px; border-bottom: 1px solid var(--outline);
@@ -444,7 +463,9 @@
   @media (max-width: 1100px) {
     .titlebar .tgl.r { display: inline-block; }
     /* right pane becomes an overlay drawer — keep it out of the grid track */
-    .shell, .shell.show-right { grid-template-columns: 256px 1fr; }
+    .shell, .shell.show-right { grid-template-columns: 256px minmax(0, 1fr); }
+    .pane-resizer { display: none; }
+    .pane-center { grid-column: 2; }
     .pane-right, .shell.show-right .pane-right {
                   position: fixed; top: 0; right: 0; height: 100vh; width: 380px; max-width: 88vw;
                   z-index: 20; background: var(--term-bg); transform: translateX(100%);
@@ -457,12 +478,12 @@
     .term { height: 100vh; border-radius: 0; }
     .titlebar .dot { display: none; }
     .titlebar .tgl.l { display: inline-block; }
-    .shell { grid-template-columns: 1fr; }
+    .shell, .shell.show-right { grid-template-columns: 1fr; }
     .pane-left { position: fixed; top: 0; left: 0; height: 100vh; width: 300px; max-width: 86vw;
                  z-index: 20; background: var(--term-bg); transform: translateX(-100%);
                  transition: transform .2s; box-shadow: 20px 0 50px rgba(0,0,0,0.4); }
     .shell.show-left .pane-left { transform: none; }
-    .pane-center { padding: 16px 16px 40px; }
+    .pane-center { grid-column: 1; padding: 16px 16px 40px; }
     h1 { font-size: 20px; }
   }
   @media (prefers-reduced-motion: reduce) {
@@ -481,7 +502,9 @@
   </div>
   <div class="shell" id="shell">
     <aside class="pane-left" id="pane-left"></aside>
+    <div class="pane-resizer left" id="pane-resizer-left" role="separator" aria-label="调整会话栏宽度" aria-orientation="vertical" tabindex="0"></div>
     <main class="pane-center" id="pane-center"><div class="empty">loading…</div></main>
+    <div class="pane-resizer right" id="pane-resizer-right" role="separator" aria-label="调整详情栏宽度" aria-orientation="vertical" tabindex="0"></div>
     <aside class="pane-right" id="pane-right"></aside>
   </div>
 </div>
@@ -500,6 +523,18 @@
   const centerEl = document.getElementById('pane-center');
   const rightEl = document.getElementById('pane-right');
   const shell = document.getElementById('shell');
+  const leftResizer = document.getElementById('pane-resizer-left');
+  const rightResizer = document.getElementById('pane-resizer-right');
+  const PANE = {
+    leftDefault: 256, rightDefault: 360,
+    leftMin: 200, leftMax: 420,
+    rightMin: 280, rightMax: 640,
+    centerMin: 560, resizerWidth: 8,
+    desktopMin: 1101
+  };
+  const paneLayout = { left: PANE.leftDefault, right: PANE.rightDefault };
+  const panePreferred = { left: PANE.leftDefault, right: PANE.rightDefault };
+  let paneDrag = null;
   const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c =>
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
   const MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
@@ -529,6 +564,89 @@
   }
   const clipText = c => esc(c && typeof c === 'object' ? c.text : c) +
     (c && c.clipped ? `\n<span class="clip-note">… 已截断，原文 ${c.full_len.toLocaleString()} 字符</span>` : '');
+
+  const clamp = (v, min, max) => Math.round(Math.min(Math.max(Number(v) || 0, min), max));
+  function isDesktopPaneMode() { return window.innerWidth >= PANE.desktopMin; }
+  function fitPaneLayout(left, right) {
+    left = clamp(left, PANE.leftMin, PANE.leftMax);
+    right = clamp(right, PANE.rightMin, PANE.rightMax);
+    if (!isDesktopPaneMode()) return { left, right };
+    const w = shell.getBoundingClientRect().width || window.innerWidth;
+    const hasRight = shell.classList.contains('show-right');
+    const handles = PANE.resizerWidth * (hasRight ? 2 : 1);
+    const maxLeft = Math.max(PANE.leftMin, Math.min(PANE.leftMax, w - (hasRight ? PANE.rightMin : 0) - PANE.centerMin - handles));
+    left = clamp(left, PANE.leftMin, maxLeft);
+    if (hasRight) {
+      const maxRight = Math.max(PANE.rightMin, Math.min(PANE.rightMax, w - left - PANE.centerMin - handles));
+      right = clamp(right, PANE.rightMin, maxRight);
+    }
+    return { left, right };
+  }
+  function applyPaneLayout(left, right, opts = {}) {
+    if (opts.preferred) {
+      panePreferred.left = clamp(left, PANE.leftMin, PANE.leftMax);
+      panePreferred.right = clamp(right, PANE.rightMin, PANE.rightMax);
+    }
+    const next = fitPaneLayout(left, right);
+    paneLayout.left = next.left; paneLayout.right = next.right;
+    shell.style.setProperty('--pane-left-width', paneLayout.left + 'px');
+    shell.style.setProperty('--pane-right-width', paneLayout.right + 'px');
+  }
+  function postPaneLayout() {
+    const mh = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.paneLayout;
+    if (mh) mh.postMessage({ left: panePreferred.left, right: panePreferred.right });
+  }
+  function onPanePointerMove(e) {
+    if (!paneDrag) return;
+    const dx = e.clientX - paneDrag.startX;
+    if (paneDrag.side === 'left') applyPaneLayout(paneDrag.startLeft + dx, paneDrag.startRight);
+    else applyPaneLayout(paneDrag.startLeft, paneDrag.startRight - dx);
+  }
+  function endPaneDrag(e) {
+    if (!paneDrag) return;
+    const d = paneDrag;
+    d.el.removeEventListener('pointermove', onPanePointerMove);
+    d.el.removeEventListener('pointerup', endPaneDrag);
+    d.el.removeEventListener('pointercancel', endPaneDrag);
+    if (d.el.releasePointerCapture) { try { d.el.releasePointerCapture(d.pointerId); } catch (err) {} }
+    d.el.classList.remove('dragging');
+    shell.classList.remove('resizing');
+    paneDrag = null;
+    if (d.side === 'left') panePreferred.left = paneLayout.left;
+    else panePreferred.right = paneLayout.right;
+    postPaneLayout();
+  }
+  function startPaneDrag(side, el, e) {
+    if (e.button != null && e.button !== 0) return;
+    if (!isDesktopPaneMode() || (side === 'right' && !shell.classList.contains('show-right'))) return;
+    e.preventDefault();
+    paneDrag = { side, el, pointerId: e.pointerId, startX: e.clientX,
+      startLeft: paneLayout.left, startRight: paneLayout.right };
+    if (el.setPointerCapture) el.setPointerCapture(e.pointerId);
+    el.classList.add('dragging');
+    shell.classList.add('resizing');
+    el.addEventListener('pointermove', onPanePointerMove);
+    el.addEventListener('pointerup', endPaneDrag);
+    el.addEventListener('pointercancel', endPaneDrag);
+  }
+  function resetPaneWidth(side) {
+    if (!isDesktopPaneMode()) return;
+    const left = side === 'left' ? PANE.leftDefault : panePreferred.left;
+    const right = side === 'right' ? PANE.rightDefault : panePreferred.right;
+    applyPaneLayout(left, right, { preferred: true });
+    postPaneLayout();
+  }
+  function bindPaneResizers() {
+    if (leftResizer) {
+      leftResizer.onpointerdown = e => startPaneDrag('left', leftResizer, e);
+      leftResizer.ondblclick = () => resetPaneWidth('left');
+    }
+    if (rightResizer) {
+      rightResizer.onpointerdown = e => startPaneDrag('right', rightResizer, e);
+      rightResizer.ondblclick = () => resetPaneWidth('right');
+    }
+    window.addEventListener('resize', () => applyPaneLayout(panePreferred.left, panePreferred.right));
+  }
 
   // ——— minimal, self-contained markdown for human/agent prose ———
   // Inline: **bold**, *italic*, `code`, ~~strike~~, [text](url). Underscores are
@@ -964,6 +1082,7 @@
         + `<div class="empty">${msg}</div>`;
       rightEl.innerHTML = '';
       shell.classList.remove('show-right');
+      applyPaneLayout(panePreferred.left, panePreferred.right);
       setInfoActive(false);
       centerEl.scrollTop = 0;
       return;
@@ -1030,6 +1149,7 @@
     rightEl.innerHTML = rheadHTML('工具详情')
       + `<div class="rempty">点击中栏对话里的工具，查看它的详情。</div>`;
     shell.classList.remove('show-right');
+    applyPaneLayout(panePreferred.left, panePreferred.right);
     ACTIVE.rightMode = null; setInfoActive(false);
 
     bindTabInteractions();
@@ -1049,7 +1169,9 @@
     rightEl.innerHTML = rheadHTML('工具 · ' + card.name) + card.html;
     const d = rightEl.querySelector('details.tcard');
     if (d) { d.open = true; d.classList.remove('flash'); void d.offsetWidth; d.classList.add('flash'); }
+    shell.classList.remove('show-left');
     shell.classList.add('show-right');
+    applyPaneLayout(panePreferred.left, panePreferred.right);
     ACTIVE.rightMode = 'tool'; setInfoActive(false);
     rightEl.scrollTop = 0;
     bindRightInteractions();
@@ -1102,7 +1224,9 @@
       + `</div>`;
     h += `</div>`;
     rightEl.innerHTML = h;
+    shell.classList.remove('show-left');
     shell.classList.add('show-right');
+    applyPaneLayout(panePreferred.left, panePreferred.right);
     ACTIVE.rightMode = 'info'; setInfoActive(true);
     rightEl.scrollTop = 0;
     bindRightInteractions();
@@ -1114,6 +1238,7 @@
     const rclose = rightEl.querySelector('.rclose');
     if (rclose) rclose.onclick = () => {
       shell.classList.remove('show-right');
+      applyPaneLayout(panePreferred.left, panePreferred.right);
       if (ACTIVE) {
         ACTIVE.rightMode = null;
         setSessionRoute(ACTIVE.id, ACTIVE.tab, null, { silent: true });
@@ -1200,7 +1325,11 @@
       hits.forEach(m => m.classList.remove('cur'));
       idx = (i + hits.length) % hits.length;
       hits[idx].classList.add('cur');
-      if (rightEl.contains(hits[idx])) shell.classList.add('show-right'); // reveal hidden tool pane
+      if (rightEl.contains(hits[idx])) {
+        shell.classList.remove('show-left');
+        shell.classList.add('show-right'); // reveal hidden tool pane
+        applyPaneLayout(panePreferred.left, panePreferred.right);
+      }
       hits[idx].scrollIntoView({ behavior: 'smooth', block: 'center' });
       counter.textContent = `${idx + 1}/${hits.length}`;
     };
@@ -1219,6 +1348,7 @@
     leftEl.querySelectorAll('.srow').forEach(el => el.classList.remove('active'));
     rightEl.innerHTML = '';
     shell.classList.remove('show-right');
+    applyPaneLayout(panePreferred.left, panePreferred.right);
     setInfoActive(false);
 
     // 概览统计来自后端「命中池全量」聚合（scope.matched），不受 maxSessions / 加载更多影响；
@@ -1288,13 +1418,21 @@
   }
 
   // mobile drawer toggles
-  document.getElementById('tgl-left').onclick = () => shell.classList.toggle('show-left');
-  document.getElementById('tgl-right').onclick = () => shell.classList.toggle('show-right');
+  document.getElementById('tgl-left').onclick = () => {
+    if (!shell.classList.contains('show-left')) shell.classList.remove('show-right');
+    shell.classList.toggle('show-left');
+  };
+  document.getElementById('tgl-right').onclick = () => {
+    if (!shell.classList.contains('show-right')) shell.classList.remove('show-left');
+    shell.classList.toggle('show-right');
+    applyPaneLayout(panePreferred.left, panePreferred.right);
+  };
   // 详细 — toggle the active agent info panel in the right pane.
   // Exposed on window.__agentSession so the native toolbar button can drive it too.
   function toggleInfo() {
     if (ACTIVE && ACTIVE.rightMode === 'info' && shell.classList.contains('show-right')) {
       shell.classList.remove('show-right');
+      applyPaneLayout(panePreferred.left, panePreferred.right);
       ACTIVE.rightMode = null;
       setInfoActive(false);
       setSessionRoute(ACTIVE.id, ACTIVE.tab, null, { silent: true });
@@ -1314,6 +1452,7 @@
       renderSidebar();
       route();
     },
+    setPaneLayout(left, right) { applyPaneLayout(left, right, { preferred: true }); },
     // Backward-compatible alias for standalone/generated pages that still call load().
     load(jsonText) { this.loadIndex(jsonText); },
     loadDetail(id, jsonText, token) {
@@ -1338,6 +1477,7 @@
     },
     toggleInfo
   };
+  bindPaneResizers();
   rebuildIndex();
   renderSidebar();
   window.addEventListener('hashchange', route);
