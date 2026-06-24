@@ -362,6 +362,7 @@
   .sinfo-row { display: flex; justify-content: space-between; gap: 12px; padding: 5px 0;
                border-bottom: 1px solid var(--outline); color: var(--dim); }
   .sinfo-row b { color: var(--cream); font-weight: 500; }
+  .sinfo-row.id b { font-family: var(--mono); font-size: 11px; text-align: right; word-break: break-all; }
   .sinfo-row.sub { color: var(--subtle); padding-left: 12px; }
   .cbar { height: 7px; border-radius: 4px; background: rgba(142,154,200,0.15);
           overflow: hidden; margin: 4px 0 8px; }
@@ -474,7 +475,7 @@
   <div class="titlebar">
     <span class="dot"></span><span class="dot"></span><span class="dot"></span>
     <span class="path" id="title-path">~/.claude/projects — session-viewer</span>
-    <button class="tinfo" id="tgl-info" type="button" title="会话信息（Token / 缓存）">ⓘ 详细</button>
+    <button class="tinfo" id="tgl-info" type="button" title="当前 Agent 信息（Token / 缓存）">ⓘ 详细</button>
     <button class="tgl l" id="tgl-left" type="button">☰ 会话</button>
     <button class="tgl r" id="tgl-right" type="button">工具 ⚙</button>
   </div>
@@ -502,9 +503,9 @@
   const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c =>
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
   const MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-  const niceDate = iso => { const d = new Date(iso); return isNaN(d) ? '' :
+  const niceDate = iso => { if (!iso) return ''; const d = new Date(iso); return isNaN(d) ? '' :
     `${MON[d.getMonth()]} ${d.getDate()} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`; };
-  const niceTime = iso => { const d = new Date(iso); return isNaN(d) ? '' :
+  const niceTime = iso => { if (!iso) return ''; const d = new Date(iso); return isNaN(d) ? '' :
     `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}:${String(d.getSeconds()).padStart(2,'0')}`; };
   const dur = ms => { if (!ms) return '0m'; const m = Math.round(ms/60000);
     return m >= 60 ? `${(m/60).toFixed(1)}h` : `${m}m`; };
@@ -652,6 +653,30 @@
 
   function rebuildIndex() { byId = Object.fromEntries(DATA.sessions.map(s => [s.id, s])); }
   function setPath(t) { document.getElementById('title-path').textContent = t; }
+  function parseRoute() {
+    const m = /^#s\/([^?]+)(?:\?(.*))?$/.exec(location.hash);
+    if (!m) return null;
+    const qs = new URLSearchParams(m[2] || '');
+    return { id: decodeURIComponent(m[1]), tab: qs.get('tab') || 'main', right: qs.get('right') || null };
+  }
+  function sessionHash(id, tab, right) {
+    const qs = new URLSearchParams();
+    if (tab && tab !== 'main') qs.set('tab', tab);
+    if (right) qs.set('right', right);
+    const q = qs.toString();
+    return '#s/' + encodeURIComponent(id) + (q ? '?' + q : '');
+  }
+  function setSessionRoute(id, tab, right, opts = {}) {
+    const hash = sessionHash(id, tab || 'main', right || null);
+    if (location.hash === hash) return;
+    if (opts.silent && history.replaceState) history.replaceState(null, '', hash);
+    else location.hash = hash;
+  }
+  function restoreRightPane(right) {
+    if (!ACTIVE || !right) return;
+    if (right === 'info') { showInfo({ updateHash: false }); return; }
+    if (right.startsWith('tool:')) showTool(right.slice('tool:'.length), { updateHash: false });
+  }
 
   // ——— left pane: project-grouped session list (persistent) ———
   function renderSidebar() {
@@ -770,30 +795,39 @@
   }
 
   // ——— flatten every subagent (incl. nested + orphans) into a flat tab list ———
-  // Returns { agents:[{key,label,conv,isMain}], subKeyOf: Map(subObject -> key) }
+  // Returns { agents:[{key,label,conv,isMain,meta}], subKeyOf: Map(subObject -> key) }
   function collectAgents(session) {
-    const agents = [{ key: 'main', label: '主 Agent', conv: session.turns || [], isMain: true }];
+    const mainMeta = { ...session, key: 'main', label: '主 Agent', agent_type: 'main', agent_id: '', is_orphan: false };
+    const agents = [{ key: 'main', label: '主 Agent', conv: session.turns || [], isMain: true, meta: mainMeta }];
     const subKeyOf = new Map();
+    const seen = new Set(['main']);
     let c = 0;
+    const stableKey = (sub, prefix) => {
+      const base = sub.key || (sub.agent_id ? 'agent:' + sub.agent_id : prefix + ':' + (c++));
+      if (!seen.has(base)) return base;
+      let n = 2;
+      while (seen.has(base + '-' + n)) n++;
+      return base + '-' + n;
+    };
+    const addSub = (sub, fallbackPrefix) => {
+      const key = stableKey(sub, fallbackPrefix);
+      seen.add(key);
+      subKeyOf.set(sub, key);
+      if (!sub.key) sub.key = key;
+      const orphan = !!sub.is_orphan || fallbackPrefix === 'orphan';
+      const label = sub.label || ((sub.agent_type || 'subagent') + (orphan ? ' (orphan)' : ''));
+      agents.push({ key, label, conv: sub.turns || [], isMain: false, meta: sub });
+      walk(sub.turns);
+    };
     const walk = turns => {
       for (const t of (turns || [])) {
         if (t.role === 'assistant' && t.kind === 'tool_use' && Array.isArray(t.subagents)) {
-          for (const sub of t.subagents) {
-            const key = 'sub' + (c++);
-            subKeyOf.set(sub, key);
-            agents.push({ key, label: sub.agent_type || 'subagent', conv: sub.turns || [], isMain: false });
-            walk(sub.turns);
-          }
+          for (const sub of t.subagents) addSub(sub, 'sub');
         }
       }
     };
     walk(session.turns);
-    for (const sub of (session.orphan_subagents || [])) {
-      const key = 'sub' + (c++);
-      subKeyOf.set(sub, key);
-      agents.push({ key, label: (sub.agent_type || 'subagent') + ' (orphan)', conv: sub.turns || [], isMain: false });
-      walk(sub.turns);
-    }
+    for (const sub of (session.orphan_subagents || [])) addSub(sub, 'orphan');
     return { agents, subKeyOf };
   }
 
@@ -916,10 +950,12 @@
   function renderDetail(id) {
     const s = byId[id];
     if (!s) { centerEl.innerHTML = '<div class="empty">未找到该会话。</div>'; rightEl.innerHTML = ''; return; }
+    const state = parseRoute();
+    const requestedTab = state && state.id === id ? (state.tab || 'main') : 'main';
     setPath((s.cwd || s.project_label) + ' — ' + id.slice(0, 8));
     highlightSidebar(id);
     if (!hasDetail(s)) {
-      ACTIVE = { id, session: s, agents: [], subKeyOf: new Map(), tab: 'main', pending: true };
+      ACTIVE = { id, session: s, agents: [], subKeyOf: new Map(), tab: requestedTab, pending: true };
       if ((!s.__detail_loading || s.__detail_token !== detailToken) && !s.__detail_failed) requestDetail(id, s);
       const msg = s.__detail_loading ? '正在加载详情…'
         : (s.__detail_failed ? '详情加载失败，请稍后刷新重试。' : '当前环境无法请求完整详情。');
@@ -933,17 +969,22 @@
       return;
     }
     const { agents, subKeyOf } = collectAgents(s);
-    ACTIVE = { id, session: s, agents, subKeyOf, tab: 'main' };
-    renderTab('main');
+    const tab = agents.some(a => a.key === requestedTab) ? requestedTab : 'main';
+    ACTIVE = { id, session: s, agents, subKeyOf, tab };
+    renderTab(tab, { updateHash: false });
+    if (state && state.id === id && state.right) restoreRightPane(state.right);
   }
 
-  function renderTab(tabKey) {
+  function renderTab(tabKey, opts = {}) {
     if (!ACTIVE) return;
     const { agents, subKeyOf, session: s } = ACTIVE;
     const agent = agents.find(a => a.key === tabKey) || agents[0];
     ACTIVE.tab = agent.key;
+    ACTIVE.agent = agent;
+    const keepRight = ACTIVE.rightMode === 'info' ? 'info' : null;
     const { mid, cards, anchors } = renderConversationSplit(agent.conv, agent.key, subKeyOf);
     ACTIVE.cards = cards;
+    if (opts.updateHash !== false) setSessionRoute(ACTIVE.id, agent.key, keepRight);
 
     // tab bar — only shown when there's more than the main agent (subagents exist)
     let c = agents.length > 1
@@ -957,7 +998,9 @@
       c += `<div class="dhead"><div class="crumbs">${esc(s.project_label)} / ${esc(s.id)}</div>`
         + `<h1>${esc(s.preview)}</h1></div>`;
     } else {
-      c += `<div class="dhead"><div class="crumbs">subagent · ${esc(s.preview)}</div>`
+      const meta = agent.meta || {};
+      const subPreview = meta.preview && meta.preview !== '(no text prompt)' ? ` · ${esc(meta.preview)}` : '';
+      c += `<div class="dhead"><div class="crumbs">subagent · ${esc(s.preview)}${subPreview}</div>`
         + `<h1>⬡ ${esc(agent.label)}</h1></div>`;
     }
 
@@ -966,7 +1009,7 @@
       + `<span class="search-count" id="search-count"></span>`
       + `<button class="tbtn" data-act="expand">展开全部</button>`
       + `<button class="tbtn" data-act="collapse">折叠全部</button>`
-      + `<button class="tbtn" id="det-info" data-act="info" title="会话信息（Token / 缓存）">ⓘ 详细</button></div>`;
+      + `<button class="tbtn" id="det-info" data-act="info" title="当前 Agent 信息（Token / 缓存）">ⓘ 详细</button></div>`;
 
     if (anchors.length > 1) {
       c += `<details class="toc"><summary>目录 · ${anchors.length} 轮对话</summary><ol>`;
@@ -979,7 +1022,8 @@
     }
     c += `<hr class="hr">`;
     c += mid || `<div class="empty">这个 Agent 没有可显示的对话。</div>`;
-    c += `<footer>session ${esc(s.id)} · ${esc(s.cwd || '')}</footer>`;
+    const meta = agent.meta || s;
+    c += `<footer>session ${esc(s.id)} · ${esc(meta.cwd || s.cwd || '')}</footer>`;
     centerEl.innerHTML = c;
 
     // right pane starts empty + collapsed; a single tool renders on demand (showTool)
@@ -998,10 +1042,10 @@
   }
 
   // render exactly ONE tool's detail into the right pane (replacing whatever was there)
-  function showTool(tid) {
-    if (!ACTIVE || !ACTIVE.cards) return;
+  function showTool(tid, opts = {}) {
+    if (!ACTIVE || !ACTIVE.cards) return false;
     const card = ACTIVE.cards.get(tid);
-    if (!card) return;
+    if (!card) return false;
     rightEl.innerHTML = rheadHTML('工具 · ' + card.name) + card.html;
     const d = rightEl.querySelector('details.tcard');
     if (d) { d.open = true; d.classList.remove('flash'); void d.offsetWidth; d.classList.add('flash'); }
@@ -1009,6 +1053,8 @@
     ACTIVE.rightMode = 'tool'; setInfoActive(false);
     rightEl.scrollTop = 0;
     bindRightInteractions();
+    if (opts.updateHash !== false) setSessionRoute(ACTIVE.id, ACTIVE.tab, 'tool:' + tid, { silent: true });
+    return true;
   }
 
   const fmtTok = n => n >= 1e6 ? (n / 1e6).toFixed(2) + 'M'
@@ -1022,14 +1068,17 @@
     });
   }
 
-  // render the session-level info (token usage, cache coverage, stats) into the right pane
-  function showInfo() {
+  // render the active agent-level info (token usage, cache coverage, stats) into the right pane
+  function showInfo(opts = {}) {
     if (!ACTIVE) return;
-    const s = ACTIVE.session;
-    const u = s.usage || { input_uncached: 0, cache_create: 0, cache_read: 0, output: 0, input_total: 0, total: 0, cache_pct: 0 };
-    let h = rheadHTML('会话信息');
+    const agent = ACTIVE.agent || (ACTIVE.agents && ACTIVE.agents.find(a => a.key === ACTIVE.tab)) || null;
+    const meta = (agent && agent.meta) || ACTIVE.session;
+    const u = meta.usage || { input_uncached: 0, cache_create: 0, cache_read: 0, output: 0, input_total: 0, total: 0, cache_pct: 0 };
+    const isMain = !agent || agent.isMain;
+    const sessionId = meta.session_id || (isMain ? meta.id : ACTIVE.session && ACTIVE.session.id) || '—';
+    let h = rheadHTML(isMain ? '会话信息' : 'Agent 信息');
     h += `<div class="sinfo">`;
-    h += `<div class="sinfo-sec"><div class="sinfo-h">Token 用量（本会话，不含 subagent）</div>`
+    h += `<div class="sinfo-sec"><div class="sinfo-h">Token 用量（${isMain ? '主会话，不含 subagent' : '当前 subagent'}）</div>`
       + infoRow('总计', fmtTok(u.total))
       + infoRow('输入 · 未缓存', fmtTok(u.input_uncached), 'sub')
       + infoRow('输入 · 写入缓存', fmtTok(u.cache_create), 'sub')
@@ -1037,16 +1086,19 @@
       + infoRow('输出', fmtTok(u.output), 'sub')
       + `</div>`;
     h += `<div class="sinfo-sec"><div class="sinfo-h">缓存覆盖率</div>`
-      + `<div class="cbar"><span style="width:${u.cache_pct}%"></span></div>`
-      + infoRow('读取缓存 / 总输入', u.cache_pct + '%')
+      + `<div class="cbar"><span style="width:${u.cache_pct || 0}%"></span></div>`
+      + infoRow('读取缓存 / 总输入', (u.cache_pct || 0) + '%')
       + `</div>`;
-    h += `<div class="sinfo-sec"><div class="sinfo-h">会话统计</div>`
-      + infoRow('轮对话', s.num_user_msgs)
-      + infoRow('回复', s.num_assistant_msgs)
-      + infoRow('工具调用', s.num_tool_calls)
-      + infoRow('时长', dur(s.duration_ms))
-      + infoRow('时间', niceDate(s.first_ts) + ' → ' + niceDate(s.last_ts))
-      + (s.git_branch ? infoRow('分支', '⎇ ' + s.git_branch) : '')
+    h += `<div class="sinfo-sec"><div class="sinfo-h">${isMain ? '会话统计' : 'Agent 统计'}</div>`
+      + infoRow('Session ID', sessionId, 'id')
+      + infoRow('轮对话', meta.num_user_msgs ?? meta.num_user ?? 0)
+      + infoRow('回复', meta.num_assistant_msgs ?? meta.num_assistant ?? 0)
+      + infoRow('工具调用', meta.num_tool_calls ?? meta.num_tools ?? 0)
+      + infoRow('时长', dur(meta.duration_ms))
+      + infoRow('时间', niceDate(meta.first_ts) + ' → ' + niceDate(meta.last_ts))
+      + (meta.git_branch ? infoRow('分支', '⎇ ' + meta.git_branch) : '')
+      + (!isMain && meta.agent_type ? infoRow('类型', meta.agent_type) : '')
+      + (!isMain && meta.agent_id ? infoRow('Agent ID', meta.agent_id) : '')
       + `</div>`;
     h += `</div>`;
     rightEl.innerHTML = h;
@@ -1054,6 +1106,7 @@
     ACTIVE.rightMode = 'info'; setInfoActive(true);
     rightEl.scrollTop = 0;
     bindRightInteractions();
+    if (opts.updateHash !== false) setSessionRoute(ACTIVE.id, ACTIVE.tab, 'info', { silent: true });
   }
 
   // (re)bind the right pane's own controls — its content is re-rendered per tool
@@ -1061,7 +1114,10 @@
     const rclose = rightEl.querySelector('.rclose');
     if (rclose) rclose.onclick = () => {
       shell.classList.remove('show-right');
-      if (ACTIVE) ACTIVE.rightMode = null;
+      if (ACTIVE) {
+        ACTIVE.rightMode = null;
+        setSessionRoute(ACTIVE.id, ACTIVE.tab, null, { silent: true });
+      }
       setInfoActive(false);
     };
     rightEl.querySelectorAll('.copy-btn').forEach(b => b.onclick = e => {
@@ -1072,7 +1128,9 @@
 
   function bindTabInteractions() {
     // switch tabs
-    centerEl.querySelectorAll('.tab').forEach(b => b.onclick = () => renderTab(b.dataset.tab));
+    centerEl.querySelectorAll('.tab').forEach(b => b.onclick = () => {
+      if (ACTIVE) setSessionRoute(ACTIVE.id, b.dataset.tab, ACTIVE.rightMode === 'info' ? 'info' : null);
+    });
     // toc jump
     centerEl.querySelectorAll('.toc a').forEach(a => a.onclick = e => {
       e.preventDefault();
@@ -1090,7 +1148,7 @@
     centerEl.querySelectorAll('.tool-anchor[data-tool]').forEach(b => b.onclick = () => showTool(b.dataset.tool));
     // middle agent jump -> switch to that subagent's tab
     centerEl.querySelectorAll('.tool-anchor.agent-jump[data-tab]').forEach(b => b.onclick = () => {
-      if (b.dataset.tab) renderTab(b.dataset.tab);
+      if (ACTIVE && b.dataset.tab) setSessionRoute(ACTIVE.id, b.dataset.tab, null);
     });
     // bind the right pane's initial (placeholder) controls
     bindRightInteractions();
@@ -1223,8 +1281,8 @@
   }
 
   function route() {
-    const m = /^#s\/(.+)$/.exec(location.hash);
-    if (m) { renderDetail(decodeURIComponent(m[1])); }
+    const state = parseRoute();
+    if (state) { renderDetail(state.id); }
     else if (DATA.sessions.length) { renderOverview(); }
     else { centerEl.innerHTML = '<div class="empty">这个范围内还没有会话。试试 <code>--all</code>。</div>'; }
   }
@@ -1232,13 +1290,14 @@
   // mobile drawer toggles
   document.getElementById('tgl-left').onclick = () => shell.classList.toggle('show-left');
   document.getElementById('tgl-right').onclick = () => shell.classList.toggle('show-right');
-  // 详细 — toggle the session info panel in the right pane.
+  // 详细 — toggle the active agent info panel in the right pane.
   // Exposed on window.__agentSession so the native toolbar button can drive it too.
   function toggleInfo() {
     if (ACTIVE && ACTIVE.rightMode === 'info' && shell.classList.contains('show-right')) {
       shell.classList.remove('show-right');
       ACTIVE.rightMode = null;
       setInfoActive(false);
+      setSessionRoute(ACTIVE.id, ACTIVE.tab, null, { silent: true });
     } else {
       showInfo();
     }
@@ -1259,11 +1318,13 @@
     load(jsonText) { this.loadIndex(jsonText); },
     loadDetail(id, jsonText, token) {
       const s = byId[id];
-      if (!s || token !== s.__detail_token || location.hash !== '#s/' + id) return;
+      if (!s || token !== s.__detail_token) return;
+      const state = parseRoute();
+      const isCurrent = state && state.id === id;
       if (!jsonText) {
         s.__detail_loading = false;
         s.__detail_failed = true;
-        renderDetail(id);
+        if (isCurrent) renderDetail(id);
         return;
       }
       const detail = JSON.parse(jsonText);
@@ -1273,7 +1334,7 @@
       byId[id] = detail;
       const idx = DATA.sessions.findIndex(x => x.id === id);
       if (idx >= 0) DATA.sessions[idx] = detail;
-      renderDetail(id);
+      if (isCurrent) renderDetail(id);
     },
     toggleInfo
   };

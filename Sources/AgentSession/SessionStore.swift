@@ -231,25 +231,66 @@ final class SessionStore {
         if parsed.turns.isEmpty && parsed.firstTs == nil { return nil }
 
         var turns = parsed.turns
-        var orphans: [[String: Any]] = []
-        for sub in subagents {
+        var records: [(sub: SubagentRef, parsed: ParsedFile, key: String)] = []
+        for (i, sub) in subagents.enumerated() {
             let sp = parser.parseFile(sub.path)
             if sp.turns.isEmpty { continue }
-            let nested: [String: Any] = [
-                "agent_type": sub.agentType ?? "subagent",
-                "agent_id": sub.agentId ?? "",
-                "turns": sp.turns,
-                "num_user": sp.numUser,
-                "num_assistant": sp.numAssistant,
-                "num_tools": sp.numTools,
-            ]
-            if let agentId = sub.agentId, let idx = parsed.agentIdToTurnIndex[agentId], idx < turns.count {
-                var subList = turns[idx]["subagents"] as? [[String: Any]] ?? []
-                subList.append(nested)
-                turns[idx]["subagents"] = subList
-            } else {
-                orphans.append(nested)
+            records.append((sub, sp, subagentKey(sub, fallbackIndex: i)))
+        }
+
+        var parentOwner = Array(repeating: -2, count: records.count) // -2 = orphan, -1 = main, >=0 = subagent index
+        var parentTurn = Array(repeating: -1, count: records.count)
+        for i in records.indices {
+            guard let agentId = records[i].sub.agentId else { continue }
+            if let idx = parsed.agentIdToTurnIndex[agentId], idx < turns.count {
+                parentOwner[i] = -1
+                parentTurn[i] = idx
+                continue
             }
+            for j in records.indices where j != i {
+                if let idx = records[j].parsed.agentIdToTurnIndex[agentId], idx < records[j].parsed.turns.count {
+                    parentOwner[i] = j
+                    parentTurn[i] = idx
+                    break
+                }
+            }
+        }
+
+        var mainChildren: [(child: Int, turnIndex: Int)] = []
+        var childrenByParent = Array(repeating: [(child: Int, turnIndex: Int)](), count: records.count)
+        for i in records.indices {
+            if parentOwner[i] == -1 {
+                mainChildren.append((i, parentTurn[i]))
+            } else if parentOwner[i] >= 0 {
+                childrenByParent[parentOwner[i]].append((i, parentTurn[i]))
+            }
+        }
+
+        func buildPayload(_ index: Int, visiting: Set<Int> = []) -> [String: Any] {
+            var nested = subagentPayload(sub: records[index].sub, parsed: records[index].parsed,
+                                         key: records[index].key, isOrphan: parentOwner[index] == -2)
+            if visiting.contains(index) { return nested }
+            var childTurns = records[index].parsed.turns
+            var nextVisiting = visiting
+            nextVisiting.insert(index)
+            for child in childrenByParent[index] where child.turnIndex < childTurns.count {
+                var childPayload = buildPayload(child.child, visiting: nextVisiting)
+                addParentMetadata(to: &childPayload, from: childTurns[child.turnIndex], index: child.turnIndex)
+                appendSubagent(childPayload, to: &childTurns, at: child.turnIndex)
+            }
+            nested["turns"] = childTurns
+            nested["num_subagents"] = childrenByParent[index].count
+            return nested
+        }
+
+        var orphans: [[String: Any]] = []
+        for child in mainChildren where child.turnIndex < turns.count {
+            var nested = buildPayload(child.child)
+            addParentMetadata(to: &nested, from: turns[child.turnIndex], index: child.turnIndex)
+            appendSubagent(nested, to: &turns, at: child.turnIndex)
+        }
+        for i in records.indices where parentOwner[i] == -2 {
+            orphans.append(buildPayload(i))
         }
 
         return Session(
@@ -270,6 +311,61 @@ final class SessionStore {
             turns: turns,
             orphanSubagents: orphans
         )
+    }
+
+    private func appendSubagent(_ nested: [String: Any], to turns: inout [[String: Any]], at idx: Int) {
+        var subList = turns[idx]["subagents"] as? [[String: Any]] ?? []
+        subList.append(nested)
+        turns[idx]["subagents"] = subList
+    }
+
+    private func addParentMetadata(to nested: inout [String: Any], from turn: [String: Any], index: Int) {
+        nested["parent_turn_index"] = index
+        nested["parent_tool_name"] = turn["name"] ?? NSNull()
+        nested["parent_tool_summary"] = turn["summary"] ?? NSNull()
+        nested["parent_ts"] = turn["ts"] ?? NSNull()
+    }
+
+    private func subagentKey(_ sub: SubagentRef, fallbackIndex: Int) -> String {
+        if let id = sub.agentId, !id.isEmpty { return "agent:\(id)" }
+        let base = (sub.path as NSString).lastPathComponent.replacingOccurrences(of: ".jsonl", with: "")
+        return "orphan:\(base.isEmpty ? String(fallbackIndex) : base)"
+    }
+
+    private func subagentPayload(sub: SubagentRef, parsed: ParsedFile,
+                                 key: String, isOrphan: Bool) -> [String: Any] {
+        let agentType = sub.agentType ?? "subagent"
+        let agentId = sub.agentId ?? ""
+        return [
+            "key": key,
+            "id": agentId.isEmpty ? key : agentId,
+            "label": isOrphan ? "\(agentType) (orphan)" : agentType,
+            "agent_type": agentType,
+            "agent_id": agentId,
+            "is_orphan": isOrphan,
+            "cwd": parsed.cwd ?? NSNull(),
+            "git_branch": parsed.gitBranch ?? NSNull(),
+            "first_ts": parsed.firstTs.map(isoString) ?? NSNull(),
+            "last_ts": parsed.lastTs.map(isoString) ?? NSNull(),
+            "duration_ms": durationMs(first: parsed.firstTs, last: parsed.lastTs),
+            "num_user": parsed.numUser,
+            "num_assistant": parsed.numAssistant,
+            "num_tools": parsed.numTools,
+            "num_user_msgs": parsed.numUser,
+            "num_assistant_msgs": parsed.numAssistant,
+            "num_tool_calls": parsed.numTools,
+            "num_subagents": 0,
+            "usage": parsed.usage.toDict(),
+            "skills": parsed.skills,
+            "preview": firstHumanPreview(parsed.turns),
+            "turns": parsed.turns,
+            "orphan_subagents": [],
+        ]
+    }
+
+    private func durationMs(first: Date?, last: Date?) -> Int {
+        guard let first, let last else { return 0 }
+        return Int(((last.timeIntervalSince1970 - first.timeIntervalSince1970) * 1000).rounded())
     }
 
     private func projectLabelsLocked() -> [String] {
