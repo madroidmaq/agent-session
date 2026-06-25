@@ -125,10 +125,8 @@ final class TranscriptParser {
             if !p.skills.contains(skill) { p.skills.append(skill) }
         }
         func setPreview(_ text: String) {
-            guard !hasPreview else { return }
-            let one = re(text, #"\s+"#, " ").trimmingCharacters(in: .whitespaces)
-            guard !one.isEmpty else { return }
-            p.preview = one.utf16.count > 160 ? substringUTF16(one, 157) + "…" : one
+            guard !hasPreview, let preview = normalizePreviewText(text) else { return }
+            p.preview = preview
             hasPreview = true
         }
         func handleSummaryUserText(_ raw: String) {
@@ -490,6 +488,12 @@ func cwdToProjectDir(_ cwd: String) -> String {
     re(cwd, #"[^a-zA-Z0-9]"#, "-")
 }
 
+func normalizePreviewText(_ text: String) -> String? {
+    let one = re(text, #"\s+"#, " ").trimmingCharacters(in: .whitespaces)
+    guard !one.isEmpty else { return nil }
+    return one.utf16.count > 160 ? substringUTF16(one, 157) + "…" : one
+}
+
 func firstHumanPreview(_ turns: [[String: Any]]) -> String {
     for t in turns where (t["role"] as? String) == "user" {
         let kind = t["kind"] as? String
@@ -497,8 +501,7 @@ func firstHumanPreview(_ turns: [[String: Any]]) -> String {
         let txt: String
         if kind == "slash" { txt = "/" + (t["cmd"] as? String ?? "") }
         else { txt = (t["text"] as? [String: Any])?["text"] as? String ?? "" }
-        let one = re(txt, #"\s+"#, " ").trimmingCharacters(in: .whitespaces)
-        return one.utf16.count > 160 ? substringUTF16(one, 157) + "…" : one
+        if let preview = normalizePreviewText(txt) { return preview }
     }
     return "(no text prompt)"
 }

@@ -9,6 +9,7 @@ final class SessionStore {
 
     private var detailCache: [String: Session] = [:]
     private var allProjectCounts: [String: Int] = [:]
+    private var sessionIndexSummaries: [String: [String: String]] = [:]
     private var generation = 0
     private let lock = NSLock()
 
@@ -18,6 +19,7 @@ final class SessionStore {
     func reload(scopeHint: Scope = Scope()) {
         let parser = TranscriptParser(root: root)
         let files = TranscriptParser.walk(root).map { ($0, parser.classify($0)) }
+        let summariesByProject = loadAllSessionIndexSummaries()
 
         var subByParent: [String: [SubagentRef]] = [:]
         for (path, info) in files where info.kind == .subagent {
@@ -67,7 +69,7 @@ final class SessionStore {
                 numTools: parsed.numTools,
                 usage: parsed.usage,
                 skills: parsed.skills,
-                preview: parsed.preview
+                preview: preferredPreview(for: info, fallback: parsed.preview, summariesByProject: summariesByProject)
             ))
         }
 
@@ -76,6 +78,7 @@ final class SessionStore {
         lock.lock()
         summaries = next
         allProjectCounts = projectCounts
+        sessionIndexSummaries = summariesByProject
         detailCache.removeAll()
         generation += 1
         lock.unlock()
@@ -85,6 +88,7 @@ final class SessionStore {
     func reloadFull() {
         let parser = TranscriptParser(root: root)
         let files = TranscriptParser.walk(root).map { ($0, parser.classify($0)) }
+        let summariesByProject = loadAllSessionIndexSummaries()
 
         var subByParent: [String: [SubagentRef]] = [:]
         var projectCounts: [String: Int] = [:]
@@ -102,7 +106,8 @@ final class SessionStore {
 
         var result: [Session] = []
         for (path, info) in files where info.kind == .main {
-            if let session = buildSession(path: path, info: info, subagents: subByParent[info.sessionId] ?? [], parser: parser) {
+            if let session = buildSession(path: path, info: info, subagents: subByParent[info.sessionId] ?? [],
+                                          parser: parser, summariesByProject: summariesByProject) {
                 result.append(session)
             }
         }
@@ -110,6 +115,7 @@ final class SessionStore {
         lock.lock()
         sessions = result
         allProjectCounts = projectCounts
+        sessionIndexSummaries = summariesByProject
         detailCache.removeAll()
         generation += 1
         lock.unlock()
@@ -191,6 +197,7 @@ final class SessionStore {
             return nil
         }
         let capturedGeneration = generation
+        let summariesByProject = sessionIndexSummaries
         lock.unlock()
 
         let info = FileInfo(project: summary.project, rawProject: summary.rawProject,
@@ -198,7 +205,8 @@ final class SessionStore {
                             sessionId: summary.id, kind: .main)
         let parser = TranscriptParser(root: root)
         guard let session = buildSession(path: summary.mainPath, info: info,
-                                         subagents: summary.subagents, parser: parser) else { return nil }
+                                         subagents: summary.subagents, parser: parser,
+                                         summariesByProject: summariesByProject) else { return nil }
 
         lock.lock()
         guard capturedGeneration == generation else { lock.unlock(); return nil }
@@ -229,7 +237,8 @@ final class SessionStore {
     }
 
     private func buildSession(path: String, info: FileInfo,
-                              subagents: [SubagentRef], parser: TranscriptParser) -> Session? {
+                              subagents: [SubagentRef], parser: TranscriptParser,
+                              summariesByProject: [String: [String: String]]) -> Session? {
         let parsed = parser.parseFile(path)
         if parsed.turns.isEmpty && parsed.firstTs == nil { return nil }
 
@@ -315,7 +324,7 @@ final class SessionStore {
             numSubagents: subagents.count,
             usage: parsed.usage,
             skills: parsed.skills,
-            preview: firstHumanPreview(turns),
+            preview: preferredPreview(for: info, fallback: firstHumanPreview(turns), summariesByProject: summariesByProject),
             turns: turns,
             orphanSubagents: orphans
         )
@@ -389,6 +398,44 @@ final class SessionStore {
         var count: [String: Int] = [:]
         for s in summaries { count[s.projectLabel, default: 0] += 1 }
         return count.sorted { $0.value > $1.value }.map { $0.key }
+    }
+
+    private func loadAllSessionIndexSummaries() -> [String: [String: String]] {
+        let fm = FileManager.default
+        guard let names = try? fm.contentsOfDirectory(atPath: root) else { return [:] }
+        var summaries: [String: [String: String]] = [:]
+        for name in names {
+            let path = (root as NSString).appendingPathComponent(name)
+            var isDirectory: ObjCBool = false
+            guard fm.fileExists(atPath: path, isDirectory: &isDirectory), isDirectory.boolValue else { continue }
+            let indexPath = (path as NSString).appendingPathComponent("sessions-index.json")
+            let entries = loadSessionIndexSummaries(at: indexPath)
+            if !entries.isEmpty { summaries[name] = entries }
+        }
+        return summaries
+    }
+
+    private func loadSessionIndexSummaries(at path: String) -> [String: String] {
+        guard let data = FileManager.default.contents(atPath: path),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let entries = obj["entries"] as? [Any] else { return [:] }
+
+        var summaries: [String: String] = [:]
+        for case let entry as [String: Any] in entries {
+            guard let sessionId = entry["sessionId"] as? String,
+                  let summary = entry["summary"] as? String,
+                  let preview = normalizePreviewText(summary) else { continue }
+            summaries[sessionId] = preview
+        }
+        return summaries
+    }
+
+    private func preferredPreview(for info: FileInfo, fallback: String,
+                                  summariesByProject: [String: [String: String]]) -> String {
+        if let preview = summariesByProject[info.rawProject]?[info.sessionId] { return preview }
+        if info.project != info.rawProject,
+           let preview = summariesByProject[info.project]?[info.sessionId] { return preview }
+        return fallback
     }
 
     private func topJSON(scope: Scope, totalMatched: Int, shown: Int,
