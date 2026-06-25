@@ -16,6 +16,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate,
     private var activeReloadSeq = 0
     private var detailRequestSeq = 0
     private var activeDetailRequestSeq = 0
+    // 同一时间只允许一个重扫真正执行；期间的新请求合并成一次后续补跑。
+    private var reloadInFlight = false
+    private var reloadPending = false
     // 摘要缓存覆盖到的时间下界：nil = 尚未加载；.some(nil) = 已加载全部；
     // .some(date) = 缓存到 date 为止。请求范围比它更旧才需重扫。
     private var loaded = false
@@ -29,6 +32,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate,
     private let paneLeftMax = 420
     private let paneRightMin = 280
     private let paneRightMax = 640
+
+    private static let repositoryURL = URL(string: "https://github.com/madroidmaq/agent-session")!
 
     override init() {
         let root = ("~/.claude/projects" as NSString).expandingTildeInPath
@@ -102,20 +107,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate,
     // MARK: - 数据流
 
     private func reloadInBackground() {
+        guard Thread.isMainThread else {
+            DispatchQueue.main.async { self.reloadInBackground() }
+            return
+        }
+
         let currentScope = scope
         reloadSeq += 1
         let token = reloadSeq
-        activeReloadSeq = token
         activeDetailRequestSeq += 1
+
+        if reloadInFlight {
+            reloadPending = true
+            return
+        }
+
+        activeReloadSeq = token
+        reloadInFlight = true
         loadQueue.async {
             self.store.reload(scopeHint: currentScope)
             DispatchQueue.main.async {
-                guard token == self.activeReloadSeq else { return }
-                self.loaded = true
-                self.loadedSinceDate = currentScope.since.date
-                self.refreshUI()
+                if token == self.activeReloadSeq && self.scopeSince(currentScope.since, covers: self.scope.since) {
+                    self.loaded = true
+                    self.loadedSinceDate = currentScope.since.date
+                    self.refreshUI()
+                }
+                self.finishReload()
             }
         }
+    }
+
+    private func finishReload() {
+        reloadInFlight = false
+        guard reloadPending else { return }
+
+        reloadPending = false
+        reloadInBackground()
     }
 
     // 当前摘要缓存是否已覆盖请求的时间范围（覆盖则切换只需内存过滤、无需重扫）。
@@ -124,6 +151,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate,
         guard let cached = loadedSinceDate else { return true }   // 已缓存全部
         guard let req = since.date else { return false }          // 请求全部、缓存仅部分
         return req >= cached                                       // 请求范围更窄或相等
+    }
+
+    private func scopeSince(_ cached: Scope.Since, covers requested: Scope.Since) -> Bool {
+        guard let cachedDate = cached.date else { return true }       // 已加载全部
+        guard let requestedDate = requested.date else { return false } // 请求全部、缓存仅部分
+        return requestedDate >= cachedDate                            // 请求范围更窄或相等
     }
 
     // 重扫后：若当前选中的项目已不存在则回退到“全部项目”，再重新注入
@@ -231,6 +264,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate,
 
     @objc func refresh() { reloadInBackground() }
 
+    @objc func showAbout() {
+        let info = Bundle.main.infoDictionary ?? [:]
+        let version = info["CFBundleShortVersionString"] as? String ?? "未知"
+        let build = info["CFBundleVersion"] as? String ?? "未知"
+
+        let alert = NSAlert()
+        alert.messageText = "AgentSession"
+        alert.informativeText = "Version \(version) (\(build))\n\nGitHub 项目：\n\(Self.repositoryURL.absoluteString)"
+        alert.icon = NSApp.applicationIconImage
+        alert.addButton(withTitle: "打开 GitHub")
+        alert.addButton(withTitle: "关闭")
+
+        if alert.runModal() == .alertFirstButtonReturn {
+            NSWorkspace.shared.open(Self.repositoryURL)
+        }
+    }
+
     // 侧栏下拉回调：{ since, project } → 更新 scope → 重新加载摘要索引。
     // 详情页通过 sessionDetail 按需请求完整 turns / subagents。
     func userContentController(_ uc: WKUserContentController, didReceive message: WKScriptMessage) {
@@ -278,6 +328,13 @@ func buildMainMenu(target: AppDelegate) -> NSMenu {
     let appItem = NSMenuItem()
     main.addItem(appItem)
     let appMenu = NSMenu()
+    let about = NSMenuItem(title: "关于 AgentSession",
+                           action: #selector(AppDelegate.showAbout),
+                           keyEquivalent: "")
+    about.target = target
+    appMenu.addItem(about)
+    appMenu.addItem(.separator())
+
     let reload = NSMenuItem(title: "刷新", action: #selector(AppDelegate.refresh), keyEquivalent: "r")
     reload.target = target
     appMenu.addItem(reload)
