@@ -221,13 +221,17 @@
           position: sticky; top: -20px; background: var(--term-bg); z-index: 3; padding-top: 18px; }
   .tab { flex-shrink: 0; background: none; border: 1px solid var(--outline); border-bottom: none;
          color: var(--dim); font: 500 11px var(--mono); padding: 7px 13px; cursor: pointer;
-         border-radius: 6px 6px 0 0; max-width: 220px; overflow: hidden;
+         border-radius: 6px 6px 0 0; max-width: 340px; overflow: hidden;
          text-overflow: ellipsis; white-space: nowrap; }
   .tab:hover { color: var(--cream); }
   .tab.active { color: var(--cream); background: rgba(255,255,255,0.05); border-color: var(--outline); }
   .tab-main { color: var(--gold); border-color: rgba(214,165,102,0.4); }
   .tab-main.active { color: #fff; background: rgba(214,165,102,0.14); border-color: rgba(214,165,102,0.6); }
   .tab-sub.active { color: var(--slate); border-color: rgba(142,154,200,0.5); background: rgba(142,154,200,0.10); }
+  .tab-group { display: flex; gap: 4px; align-items: flex-end; flex-shrink: 0; }
+  .tab-group + .tab-group { margin-left: 10px; padding-left: 10px; border-left: 1px solid var(--outline); }
+  .tab-group-label { align-self: center; color: var(--subtle); font: 500 10px var(--mono);
+                     padding: 0 2px 7px; white-space: nowrap; }
 
   /* ——— detail header ——— */
   h1 { all: unset; display: block; font-family: var(--serif);
@@ -383,6 +387,8 @@
   .sinfo-row b { color: var(--cream); font-weight: 500; }
   .sinfo-row.id b { font-family: var(--mono); font-size: 11px; text-align: right; word-break: break-all; }
   .sinfo-row.sub { color: var(--subtle); padding-left: 12px; }
+  .sinfo-row.wrap { display: block; }
+  .sinfo-row.wrap b { display: block; margin-top: 4px; line-height: 1.45; word-break: break-word; }
   .cbar { height: 7px; border-radius: 4px; background: rgba(142,154,200,0.15);
           overflow: hidden; margin: 4px 0 8px; }
   .cbar span { display: block; height: 100%; background: var(--clay); }
@@ -558,6 +564,7 @@
     `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}:${String(d.getSeconds()).padStart(2,'0')}`; };
   const dur = ms => { if (!ms) return '0m'; const m = Math.round(ms/60000);
     return m >= 60 ? `${(m/60).toFixed(1)}h` : `${m}m`; };
+  const validTsMs = iso => { if (!iso) return null; const ms = Date.parse(iso); return Number.isFinite(ms) ? ms : null; };
 
   // copy text to clipboard with a graceful fallback (file:// or older browsers)
   function copyText(txt, btn) {
@@ -963,10 +970,11 @@
   }
 
   // ——— flatten every subagent (incl. nested + orphans) into a flat tab list ———
-  // Returns { agents:[{key,label,conv,isMain,meta}], subKeyOf: Map(subObject -> key) }
+  // Returns { agents:[{key,label,conv,isMain,meta,createdMs,order}], subKeyOf: Map(subObject -> key) }
   function collectAgents(session) {
-    const mainMeta = { ...session, key: 'main', label: '主 Agent', agent_type: 'main', agent_id: '', is_orphan: false };
-    const agents = [{ key: 'main', label: '主 Agent', conv: session.turns || [], isMain: true, meta: mainMeta }];
+    const mainMeta = { ...session, key: 'main', label: '主 Agent', agent_name: '主 Agent', agent_type: 'main', agent_id: '', is_orphan: false };
+    const mainAgent = { key: 'main', label: '主 Agent', conv: session.turns || [], isMain: true, meta: mainMeta, createdMs: validTsMs(session.first_ts), order: -1 };
+    const subagents = [];
     const subKeyOf = new Map();
     const seen = new Set(['main']);
     let c = 0;
@@ -983,8 +991,10 @@
       subKeyOf.set(sub, key);
       if (!sub.key) sub.key = key;
       const orphan = !!sub.is_orphan || fallbackPrefix === 'orphan';
-      const label = sub.label || ((sub.agent_type || 'subagent') + (orphan ? ' (orphan)' : ''));
-      agents.push({ key, label, conv: sub.turns || [], isMain: false, meta: sub });
+      const agentName = sub.agent_name || sub.label || sub.agent_type || 'subagent';
+      const label = sub.label || (agentName + (orphan ? ' (orphan)' : ''));
+      const createdMs = validTsMs(sub.created_ts || sub.parent_ts || sub.first_ts);
+      subagents.push({ key, label, conv: sub.turns || [], isMain: false, meta: sub, createdMs, order: c++ });
       walk(sub.turns);
     };
     const walk = turns => {
@@ -996,7 +1006,42 @@
     };
     walk(session.turns);
     for (const sub of (session.orphan_subagents || [])) addSub(sub, 'orphan');
-    return { agents, subKeyOf };
+    subagents.sort((a, b) => (a.createdMs ?? Infinity) - (b.createdMs ?? Infinity) || a.order - b.order);
+    return { agents: [mainAgent, ...subagents], subKeyOf };
+  }
+
+  function agentTitle(agent) {
+    const meta = agent && agent.meta || {};
+    if (agent && agent.isMain) return agent.label || '主 Agent';
+    return meta.agent_name || agent.label || meta.agent_type || 'subagent';
+  }
+
+  function agentTooltip(agent) {
+    const meta = agent && agent.meta || {};
+    const desc = meta.agent_description;
+    const preview = meta.preview && meta.preview !== '(no text prompt)' ? meta.preview : '';
+    return desc || preview || agentTitle(agent);
+  }
+
+  function agentDisplayTitle(agent) {
+    const name = agentTitle(agent);
+    const meta = agent && agent.meta || {};
+    const desc = meta.agent_description;
+    return agent && !agent.isMain && desc ? `${name}（${desc}）` : name;
+  }
+
+  function groupSubagentTabs(agents) {
+    const groups = [];
+    for (const agent of agents.filter(a => !a.isMain)) {
+      const ms = agent.createdMs;
+      const last = groups[groups.length - 1];
+      if (ms == null || !last || last.startMs == null || ms - last.startMs > 60000) {
+        groups.push({ startMs: ms, startTs: ms == null ? null : new Date(ms).toISOString(), items: [agent] });
+      } else {
+        last.items.push(agent);
+      }
+    }
+    return groups;
   }
 
   // ——— one pass over a conversation -> { mid, cards, anchors } ———
@@ -1068,9 +1113,12 @@
           // one jump-anchor per spawned subagent, switching the top tab (no tool card)
           html = subs.map(sub => {
             const k = subKeyOf.get(sub);
-            return `<button class="tool-anchor agent-jump" data-tab="${esc(k || '')}">`
-              + `<span class="ta-ic">⬡</span><span class="ta-name">${esc(sub.agent_type || 'subagent')}</span>`
-              + `<span class="ta-arg">查看 subagent 对话 →</span></button>`;
+            const name = sub.agent_name || sub.label || sub.agent_type || 'subagent';
+            const desc = sub.agent_description || '';
+            const title = desc || sub.preview || name;
+            return `<button class="tool-anchor agent-jump" data-tab="${esc(k || '')}" title="${esc(title)}">`
+              + `<span class="ta-ic">⬡</span><span class="ta-name">${esc(name)}</span>`
+              + `<span class="ta-arg">${esc(desc || '查看 subagent 对话 →')}</span></button>`;
           }).join('');
         } else {
           const tid = `${tabKey}-${n++}`;
@@ -1157,11 +1205,18 @@
     if (opts.updateHash !== false) setSessionRoute(ACTIVE.id, agent.key, keepRight);
 
     // tab bar — only shown when there's more than the main agent (subagents exist)
-    let c = agents.length > 1
-      ? `<div class="tabs">` + agents.map(a =>
-          `<button class="tab ${a.isMain ? 'tab-main' : 'tab-sub'}${a.key === agent.key ? ' active' : ''}" data-tab="${esc(a.key)}">`
-          + (a.isMain ? '● ' : '⬡ ') + esc(a.label) + `</button>`).join('') + `</div>`
-      : '';
+    let c = '';
+    if (agents.length > 1) {
+      const tabButton = a => `<button class="tab ${a.isMain ? 'tab-main' : 'tab-sub'}${a.key === agent.key ? ' active' : ''}" data-tab="${esc(a.key)}" title="${esc(agentTooltip(a))}">`
+        + (a.isMain ? '● ' : '⬡ ') + esc(agentDisplayTitle(a)) + `</button>`;
+      const main = agents.find(a => a.isMain) || agents[0];
+      c = `<div class="tabs"><div class="tab-group">${tabButton(main)}</div>`;
+      groupSubagentTabs(agents).forEach(g => {
+        c += `<div class="tab-group"><span class="tab-group-label">${esc(g.startTs ? niceTime(g.startTs) : '未知时间')}</span>`
+          + g.items.map(tabButton).join('') + `</div>`;
+      });
+      c += `</div>`;
+    }
 
     // header — session stats now live in the 详细 (session info) panel
     if (agent.isMain) {
@@ -1172,7 +1227,7 @@
       const meta = agent.meta || {};
       const subPreview = meta.preview && meta.preview !== '(no text prompt)' ? ` · ${esc(meta.preview)}` : '';
       c += `<div class="dhead"><div class="crumbs">subagent · ${esc(s.preview)}${subPreview}</div>`
-        + `<h1>⬡ ${esc(agent.label)}</h1></div>`;
+        + `<h1 title="${esc(agentTooltip(agent))}">⬡ ${esc(agentDisplayTitle(agent))}</h1></div>`;
     }
 
     c += `<div class="toolbar">`
@@ -1274,6 +1329,9 @@
       + (meta.is_worktree && meta.worktree_name ? infoRow('Worktree', meta.worktree_name) : '')
       + (meta.is_worktree && meta.raw_project ? infoRow('真实目录', meta.raw_project, 'id') : '')
       + (meta.is_worktree && meta.project_label ? infoRow('归并到', meta.project_label) : '')
+      + (!isMain && (meta.agent_name || agentTitle(agent)) ? infoRow('名称', meta.agent_name || agentTitle(agent)) : '')
+      + (!isMain && meta.agent_description ? infoRow('描述', meta.agent_description, 'wrap') : '')
+      + (!isMain && meta.created_ts ? infoRow('创建时间', niceDate(meta.created_ts)) : '')
       + (!isMain && meta.agent_type ? infoRow('类型', meta.agent_type) : '')
       + (!isMain && meta.agent_id ? infoRow('Agent ID', meta.agent_id) : '')
       + `</div>`;

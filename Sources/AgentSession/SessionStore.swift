@@ -340,7 +340,34 @@ final class SessionStore {
         nested["parent_turn_index"] = index
         nested["parent_tool_name"] = turn["name"] ?? NSNull()
         nested["parent_tool_summary"] = turn["summary"] ?? NSNull()
-        nested["parent_ts"] = turn["ts"] ?? NSNull()
+        let parentTs = turn["ts"] ?? NSNull()
+        nested["parent_ts"] = parentTs
+        if let createdTs = nonEmptyString(parentTs) {
+            nested["created_ts"] = createdTs
+        }
+
+        if let input = turn["input"] as? [String: Any] {
+            if let agentName = nonEmptyString(input["subagent_type"]) {
+                nested["agent_name"] = agentName
+            }
+            if let description = nonEmptyString(input["description"]) {
+                nested["agent_description"] = description
+            }
+        }
+
+        let agentName = nonEmptyString(nested["agent_name"])
+            ?? nonEmptyString(nested["agent_type"])
+            ?? "subagent"
+        let isOrphan = (nested["is_orphan"] as? Bool)
+            ?? (nested["is_orphan"] as? NSNumber)?.boolValue
+            ?? false
+        nested["label"] = isOrphan ? "\(agentName) (orphan)" : agentName
+    }
+
+    private func nonEmptyString(_ value: Any?) -> String? {
+        guard let string = value as? String else { return nil }
+        let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
 
     private func subagentKey(_ sub: SubagentRef, fallbackIndex: Int) -> String {
@@ -353,10 +380,14 @@ final class SessionStore {
                                  key: String, isOrphan: Bool, info: FileInfo) -> [String: Any] {
         let agentType = sub.agentType ?? "subagent"
         let agentId = sub.agentId ?? ""
+        let agentName = agentType
         return [
             "key": key,
             "id": agentId.isEmpty ? key : agentId,
-            "label": isOrphan ? "\(agentType) (orphan)" : agentType,
+            "label": isOrphan ? "\(agentName) (orphan)" : agentName,
+            "agent_name": agentName,
+            "agent_description": NSNull(),
+            "created_ts": parsed.firstTs.map(isoString) ?? NSNull(),
             "agent_type": agentType,
             "agent_id": agentId,
             "is_orphan": isOrphan,
