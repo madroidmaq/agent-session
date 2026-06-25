@@ -1466,6 +1466,12 @@
     centerEl.scrollTop = 0;
   }
 
+  function shouldRouteAfterIndexUpdate(state, changedIds) {
+    if (!state) return true;
+    if (!Array.isArray(changedIds)) return true;
+    return changedIds.includes(state.id);
+  }
+
   function route() {
     const state = parseRoute();
     if (state) { renderDetail(state.id); }
@@ -1501,12 +1507,20 @@
   // App 注入入口：原生壳运行时调用它喂入最新数据。
   // template 因此既能当独立网页（#session-data 内嵌），也能被 App 注入。
   window.__agentSession = {
-    loadIndex(jsonText) {
+    loadIndex(jsonText, changedIds) {
+      const state = parseRoute();
+      const pinned = state && ACTIVE && ACTIVE.id === state.id ? ACTIVE.session : (state ? byId[state.id] : null);
+      const shouldRoute = shouldRouteAfterIndexUpdate(state, changedIds);
       DATA = JSON.parse(jsonText);
       if (!Array.isArray(DATA.sessions)) DATA.sessions = [];
       rebuildIndex();
+      if (state && pinned && !shouldRoute) byId[state.id] = pinned;
       renderSidebar();
-      route();
+      if (shouldRoute) route();
+      else if (ACTIVE && ACTIVE.id === state.id && ACTIVE.pending) {
+        if (pinned) { pinned.__detail_loading = false; pinned.__detail_failed = false; }
+        renderDetail(state.id);
+      } else highlightSidebar(state.id);
     },
     setPaneLayout(left, right) { applyPaneLayout(left, right, { preferred: true }); },
     // Backward-compatible alias for standalone/generated pages that still call load().

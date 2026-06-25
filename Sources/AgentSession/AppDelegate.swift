@@ -19,6 +19,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate,
     // 同一时间只允许一个重扫真正执行；期间的新请求合并成一次后续补跑。
     private var reloadInFlight = false
     private var reloadPending = false
+    private var pendingChangedSessionIds = Set<String>()
+    private var pendingUnknownReload = false
     // 摘要缓存覆盖到的时间下界：nil = 尚未加载；.some(nil) = 已加载全部；
     // .some(date) = 缓存到 date 为止。请求范围比它更旧才需重扫。
     private var loaded = false
@@ -106,10 +108,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate,
 
     // MARK: - 数据流
 
-    private func reloadInBackground() {
+    private func reloadInBackground(changedPaths: [String]? = nil) {
         guard Thread.isMainThread else {
-            DispatchQueue.main.async { self.reloadInBackground() }
+            DispatchQueue.main.async { self.reloadInBackground(changedPaths: changedPaths) }
             return
+        }
+
+        if let changedPaths {
+            pendingChangedSessionIds.formUnion(classifyChangedSessionIds(from: changedPaths))
+        } else {
+            pendingUnknownReload = true
         }
 
         let currentScope = scope
@@ -122,6 +130,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate,
             return
         }
 
+        let changedSessionIds: Set<String>?
+        if pendingUnknownReload {
+            changedSessionIds = nil
+            pendingUnknownReload = false
+            pendingChangedSessionIds.removeAll()
+        } else {
+            changedSessionIds = pendingChangedSessionIds
+            pendingChangedSessionIds.removeAll()
+        }
+
         activeReloadSeq = token
         reloadInFlight = true
         loadQueue.async {
@@ -130,7 +148,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate,
                 if token == self.activeReloadSeq && self.scopeSince(currentScope.since, covers: self.scope.since) {
                     self.loaded = true
                     self.loadedSinceDate = currentScope.since.date
-                    self.refreshUI()
+                    self.refreshUI(changedSessionIds: changedSessionIds)
                 }
                 self.finishReload()
             }
@@ -142,7 +160,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate,
         guard reloadPending else { return }
 
         reloadPending = false
-        reloadInBackground()
+        reloadInBackground(changedPaths: [])
     }
 
     // 当前摘要缓存是否已覆盖请求的时间范围（覆盖则切换只需内存过滤、无需重扫）。
@@ -161,18 +179,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate,
 
     // 重扫后：若当前选中的项目已不存在则回退到“全部项目”，再重新注入
     //（项目下拉选项由页面从注入的 controls 自行渲染）。
-    private func refreshUI() {
+    private func refreshUI(changedSessionIds: Set<String>? = nil) {
         if let p = scope.projectLabel, !store.projectLabels().contains(p) {
             scope.projectLabel = nil
         }
-        inject()
+        inject(changedSessionIds: changedSessionIds)
+    }
+
+    private func classifyChangedSessionIds(from paths: [String]) -> Set<String> {
+        let parser = TranscriptParser(root: store.root)
+        return Set(paths.compactMap { path in
+            let jsonlPath: String
+            if path.hasSuffix(".jsonl") {
+                jsonlPath = path
+            } else if path.hasSuffix(".meta.json") {
+                jsonlPath = String(path.dropLast(".meta.json".count)) + ".jsonl"
+            } else {
+                return nil
+            }
+            guard jsonlPath.hasPrefix(store.root) else { return nil }
+            return parser.classify(jsonlPath).sessionId
+        })
     }
 
     // 把当前 scope 的摘要 JSON 注入网页；完整详情由页面按需请求。
-    private func inject() {
+    private func inject(changedSessionIds: Set<String>? = nil) {
         guard webReady else { pendingInject = true; return }
         let json = store.indexJSON(scope: scope)
-        webView.evaluateJavaScript("window.__agentSession && window.__agentSession.loadIndex(\(jsStringLiteral(json)));",
+        let changedArg = changedSessionIds.map { jsJSONLiteral(Array($0).sorted()) } ?? "null"
+        webView.evaluateJavaScript("window.__agentSession && window.__agentSession.loadIndex(\(jsStringLiteral(json)), \(changedArg));",
                                    completionHandler: nil)
     }
 
@@ -223,7 +258,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate,
     }
 
     private func startWatching() {
-        watcher = FileWatcher(path: store.root) { [weak self] in self?.reloadInBackground() }
+        watcher = FileWatcher(path: store.root) { [weak self] paths in
+            self?.reloadInBackground(changedPaths: paths)
+        }
         watcher?.start()
     }
 
@@ -316,6 +353,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate,
 private func jsStringLiteral(_ s: String) -> String {
     guard let data = try? JSONSerialization.data(withJSONObject: s, options: [.fragmentsAllowed]),
           var lit = String(data: data, encoding: .utf8) else { return "\"\"" }
+    lit = lit.replacingOccurrences(of: "\u{2028}", with: "\\u2028")
+             .replacingOccurrences(of: "\u{2029}", with: "\\u2029")
+    return lit
+}
+
+private func jsJSONLiteral(_ object: Any) -> String {
+    guard JSONSerialization.isValidJSONObject(object),
+          let data = try? JSONSerialization.data(withJSONObject: object),
+          var lit = String(data: data, encoding: .utf8) else { return "null" }
     lit = lit.replacingOccurrences(of: "\u{2028}", with: "\\u2028")
              .replacingOccurrences(of: "\u{2029}", with: "\\u2029")
     return lit
