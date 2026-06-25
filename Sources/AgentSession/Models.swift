@@ -40,6 +40,10 @@ struct SessionSummary {
     var id: String
     var project: String
     var projectLabel: String
+    var rawProject: String
+    var rawProjectLabel: String
+    var isWorktree: Bool
+    var worktreeName: String?
     var mainPath: String
     var subagents: [SubagentRef]
     var cwd: String?
@@ -64,6 +68,10 @@ struct SessionSummary {
             "id": id,
             "project": project,
             "project_label": projectLabel,
+            "raw_project": rawProject,
+            "raw_project_label": rawProjectLabel,
+            "is_worktree": isWorktree,
+            "worktree_name": worktreeName ?? NSNull(),
             "cwd": cwd ?? NSNull(),
             "git_branch": gitBranch ?? NSNull(),
             "first_ts": firstTs.map(isoString) ?? NSNull(),
@@ -85,8 +93,12 @@ struct SessionSummary {
 // 完整 JSON 通过 toDict() 产出。
 struct Session {
     var id: String
-    var project: String          // 目录名（-Users-…）
+    var project: String          // 归并后的目录名（-Users-…）
     var projectLabel: String
+    var rawProject: String
+    var rawProjectLabel: String
+    var isWorktree: Bool
+    var worktreeName: String?
     var cwd: String?
     var gitBranch: String?
     var firstTs: Date?
@@ -110,6 +122,10 @@ struct Session {
             "id": id,
             "project": project,
             "project_label": projectLabel,
+            "raw_project": rawProject,
+            "raw_project_label": rawProjectLabel,
+            "is_worktree": isWorktree,
+            "worktree_name": worktreeName ?? NSNull(),
             "cwd": cwd ?? NSNull(),
             "git_branch": gitBranch ?? NSNull(),
             "first_ts": firstTs.map(isoString) ?? NSNull(),

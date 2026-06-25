@@ -34,12 +34,25 @@ struct ParsedSummary {
     var preview: String = "(no text prompt)"
 }
 
+struct ProjectIdentity {
+    let project: String
+    let rawProject: String
+    let worktreeName: String?
+
+    var isWorktree: Bool { worktreeName != nil }
+}
+
 struct FileInfo {
     let project: String
+    let rawProject: String
+    let worktreeName: String?
     let sessionId: String
     let kind: Kind
     var agentId: String? = nil
     var agentType: String? = nil
+
+    var isWorktree: Bool { worktreeName != nil }
+
     enum Kind { case main, subagent }
 }
 
@@ -67,17 +80,20 @@ final class TranscriptParser {
         if rel.hasPrefix(root) { rel = String(rel.dropFirst(root.count)) }
         rel = rel.hasPrefix("/") ? String(rel.dropFirst()) : rel
         let parts = rel.split(separator: "/").map(String.init)
-        let project = parts.first ?? ""
+        let identity = canonicalizeProjectDir(parts.first ?? "")
         let base = (path as NSString).lastPathComponent.replacingOccurrences(of: ".jsonl", with: "")
         if let subIdx = parts.firstIndex(of: "subagents"), subIdx >= 1 {
             let sessionId = parts[subIdx - 1]
             let agentId = base.hasPrefix("agent-") ? String(base.dropFirst("agent-".count)) : base
             let agentType = inferAgentTypeFromMeta(path)
                 ?? inferAgentTypeFromFilename(base) ?? "subagent"
-            return FileInfo(project: project, sessionId: sessionId, kind: .subagent,
+            return FileInfo(project: identity.project, rawProject: identity.rawProject,
+                            worktreeName: identity.worktreeName,
+                            sessionId: sessionId, kind: .subagent,
                             agentId: agentId, agentType: agentType)
         }
-        return FileInfo(project: project, sessionId: base, kind: .main)
+        return FileInfo(project: identity.project, rawProject: identity.rawProject,
+                        worktreeName: identity.worktreeName, sessionId: base, kind: .main)
     }
 
     private func inferAgentTypeFromMeta(_ jsonlPath: String) -> String? {
@@ -456,6 +472,18 @@ func prettyProject(_ dir: String) -> String {
     var s = re(dir, #"^-Users-[^-]+-"#, "")
     s = re(s, #"^-"#, "")
     return s
+}
+
+func canonicalizeProjectDir(_ rawProject: String) -> ProjectIdentity {
+    guard let marker = rawProject.range(of: "--claude-worktrees-", options: .backwards) else {
+        return ProjectIdentity(project: rawProject, rawProject: rawProject, worktreeName: nil)
+    }
+    let base = String(rawProject[..<marker.lowerBound])
+    let worktreeName = String(rawProject[marker.upperBound...])
+    guard !base.isEmpty, !worktreeName.isEmpty else {
+        return ProjectIdentity(project: rawProject, rawProject: rawProject, worktreeName: nil)
+    }
+    return ProjectIdentity(project: base, rawProject: rawProject, worktreeName: worktreeName)
 }
 
 func cwdToProjectDir(_ cwd: String) -> String {

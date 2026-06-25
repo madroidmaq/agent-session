@@ -2,6 +2,7 @@
 // 做三件事：① 复制 template.html ② 把可见中文 UI 串换成英文
 // ③ 注入一份脱敏的英文 mock 数据。产物 docs/demo.html 仅供截图，不参与 app 构建。
 //   用法：node docs/make-demo.mjs
+import { Buffer } from 'node:buffer';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -177,10 +178,10 @@ const REPLACEMENTS = [
 let html = readFileSync(tplPath, 'utf8');
 for (const [from, to] of REPLACEMENTS) html = html.split(from).join(to);
 
-const json = JSON.stringify(DATA).replace(/</g, '\\u003c');
+const json = Buffer.from(JSON.stringify(DATA), 'utf8').toString('base64');
 html = html.replace(
-  '<script id="session-data" type="application/json">{}</script>',
-  `<script id="session-data" type="application/json">${json}</script>`);
+  '<script id="session-data" type="application/json" data-encoding="base64">e30=</script>',
+  `<script id="session-data" type="application/json" data-encoding="base64">${json}</script>`);
 
 // 截图辅助：进入主会话详情，并自动在右栏展开 Edit 工具卡片。
 html = html.replace('</body>', `<script>

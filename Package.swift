@@ -8,6 +8,10 @@ let package = Package(
         .executableTarget(
             name: "AgentSession",
             resources: [.copy("Resources/template.html")]
+        ),
+        .testTarget(
+            name: "AgentSessionTests",
+            dependencies: ["AgentSession"]
         )
     ]
 )

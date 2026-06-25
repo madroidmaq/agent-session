@@ -20,23 +20,19 @@ final class SessionStore {
         let files = TranscriptParser.walk(root).map { ($0, parser.classify($0)) }
 
         var subByParent: [String: [SubagentRef]] = [:]
-        var projectCounts: [String: Int] = [:]
-        for (path, info) in files {
-            if info.kind == .main {
-                projectCounts[prettyProject(info.project), default: 0] += 1
-            } else {
-                subByParent[info.sessionId, default: []].append(SubagentRef(
-                    path: path,
-                    agentId: info.agentId,
-                    agentType: info.agentType
-                ))
-            }
+        for (path, info) in files where info.kind == .subagent {
+            subByParent[info.sessionId, default: []].append(SubagentRef(
+                path: path,
+                agentId: info.agentId,
+                agentType: info.agentType
+            ))
         }
 
         // 只按时间预过滤、不按项目预过滤：缓存该时间范围的全部项目，
         // 切项目时由 indexJSON 在内存里过滤（无需重扫）。
         let sinceDate = scopeHint.since.date
         let fm = FileManager.default
+        var projectCounts: [String: Int] = [:]
         var next: [SessionSummary] = []
         for (path, info) in files where info.kind == .main {
             let label = prettyProject(info.project)
@@ -51,10 +47,15 @@ final class SessionStore {
             if parsed.firstTs == nil && parsed.numUser == 0 && parsed.numAssistant == 0 && parsed.numTools == 0 { continue }
             if let since = sinceDate, let last = parsed.lastTs, last < since { continue }
 
+            projectCounts[label, default: 0] += 1
             next.append(SessionSummary(
                 id: info.sessionId,
                 project: info.project,
                 projectLabel: label,
+                rawProject: info.rawProject,
+                rawProjectLabel: prettyProject(info.rawProject),
+                isWorktree: info.isWorktree,
+                worktreeName: info.worktreeName,
                 mainPath: path,
                 subagents: subByParent[info.sessionId] ?? [],
                 cwd: parsed.cwd,
@@ -192,7 +193,9 @@ final class SessionStore {
         let capturedGeneration = generation
         lock.unlock()
 
-        let info = FileInfo(project: summary.project, sessionId: summary.id, kind: .main)
+        let info = FileInfo(project: summary.project, rawProject: summary.rawProject,
+                            worktreeName: summary.worktreeName,
+                            sessionId: summary.id, kind: .main)
         let parser = TranscriptParser(root: root)
         guard let session = buildSession(path: summary.mainPath, info: info,
                                          subagents: summary.subagents, parser: parser) else { return nil }
@@ -268,7 +271,8 @@ final class SessionStore {
 
         func buildPayload(_ index: Int, visiting: Set<Int> = []) -> [String: Any] {
             var nested = subagentPayload(sub: records[index].sub, parsed: records[index].parsed,
-                                         key: records[index].key, isOrphan: parentOwner[index] == -2)
+                                         key: records[index].key, isOrphan: parentOwner[index] == -2,
+                                         info: info)
             if visiting.contains(index) { return nested }
             var childTurns = records[index].parsed.turns
             var nextVisiting = visiting
@@ -297,6 +301,10 @@ final class SessionStore {
             id: info.sessionId,
             project: info.project,
             projectLabel: prettyProject(info.project),
+            rawProject: info.rawProject,
+            rawProjectLabel: prettyProject(info.rawProject),
+            isWorktree: info.isWorktree,
+            worktreeName: info.worktreeName,
             cwd: parsed.cwd,
             gitBranch: parsed.gitBranch,
             firstTs: parsed.firstTs,
@@ -333,7 +341,7 @@ final class SessionStore {
     }
 
     private func subagentPayload(sub: SubagentRef, parsed: ParsedFile,
-                                 key: String, isOrphan: Bool) -> [String: Any] {
+                                 key: String, isOrphan: Bool, info: FileInfo) -> [String: Any] {
         let agentType = sub.agentType ?? "subagent"
         let agentId = sub.agentId ?? ""
         return [
@@ -343,6 +351,12 @@ final class SessionStore {
             "agent_type": agentType,
             "agent_id": agentId,
             "is_orphan": isOrphan,
+            "project": info.project,
+            "project_label": prettyProject(info.project),
+            "raw_project": info.rawProject,
+            "raw_project_label": prettyProject(info.rawProject),
+            "is_worktree": info.isWorktree,
+            "worktree_name": info.worktreeName ?? NSNull(),
             "cwd": parsed.cwd ?? NSNull(),
             "git_branch": parsed.gitBranch ?? NSNull(),
             "first_ts": parsed.firstTs.map(isoString) ?? NSNull(),

@@ -174,14 +174,14 @@
   .load-more:hover { background: var(--hover); color: var(--cream); }
   .load-more:disabled { opacity: 0.5; cursor: default; }
   .srow-meta { color: var(--dim); font-size: 10px; margin-top: 4px; }
-  .srow-skills { margin-top: 6px; line-height: 1.9; }
+  .srow-tags { margin-top: 6px; line-height: 1.9; }
 
   .chip { display: inline-block; padding: 1px 8px; border-radius: 3px;
           border: 1px solid var(--slate-faint); font-size: 10px; color: var(--slate);
           margin-right: 5px; }
-  .chip.skill { border-color: rgba(217,119,87,0.45); color: var(--clay);
-                max-width: 100%; overflow: hidden; text-overflow: ellipsis;
-                white-space: nowrap; vertical-align: bottom; }
+  .chip.worktree { border-color: rgba(217,119,87,0.65); color: var(--cream);
+                   background: rgba(217,119,87,0.16); max-width: 100%; overflow: hidden;
+                   text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
 
   /* ——— overview (landing view when no session is selected) ——— */
   .ov-stats { display: flex; gap: 40px; flex-wrap: wrap; margin: 22px 0 10px; }
@@ -502,19 +502,33 @@
   </div>
   <div class="shell" id="shell">
     <aside class="pane-left" id="pane-left"></aside>
-    <div class="pane-resizer left" id="pane-resizer-left" role="separator" aria-label="调整会话栏宽度" aria-orientation="vertical" tabindex="0"></div>
+    <div class="pane-resizer left" id="pane-resizer-left" role="separator" aria-label="调整会话栏宽度" aria-orientation="vertical" aria-controls="pane-left" tabindex="0"></div>
     <main class="pane-center" id="pane-center"><div class="empty">loading…</div></main>
-    <div class="pane-resizer right" id="pane-resizer-right" role="separator" aria-label="调整详情栏宽度" aria-orientation="vertical" tabindex="0"></div>
+    <div class="pane-resizer right" id="pane-resizer-right" role="separator" aria-label="调整详情栏宽度" aria-orientation="vertical" aria-controls="pane-right" tabindex="-1"></div>
     <aside class="pane-right" id="pane-right"></aside>
   </div>
 </div>
 
-<!-- DATA — agent replaces the {} below with the output of extract-session.mjs -->
-<script id="session-data" type="application/json">{}</script>
+<!-- DATA — standalone builds replace e30= with base64-encoded UTF-8 JSON. -->
+<script id="session-data" type="application/json" data-encoding="base64">e30=</script>
 
 <script>
 (function () {
-  let DATA = JSON.parse(document.getElementById('session-data').textContent || '{}');
+  function sessionDataText() {
+    const el = document.getElementById('session-data');
+    const text = (el && el.textContent || '').trim();
+    if (el && el.dataset.encoding === 'base64') {
+      try {
+        const bin = atob(text || 'e30=');
+        const bytes = Uint8Array.from(bin, c => c.charCodeAt(0));
+        return new TextDecoder('utf-8').decode(bytes);
+      } catch (e) {
+        return text || '{}';
+      }
+    }
+    return text || '{}';
+  }
+  let DATA = JSON.parse(sessionDataText());
   const HAS_INITIAL = Array.isArray(DATA.sessions) && DATA.sessions.length > 0;
   if (!Array.isArray(DATA.sessions)) DATA.sessions = [];
   let byId = {};
@@ -591,10 +605,25 @@
     paneLayout.left = next.left; paneLayout.right = next.right;
     shell.style.setProperty('--pane-left-width', paneLayout.left + 'px');
     shell.style.setProperty('--pane-right-width', paneLayout.right + 'px');
+    updateResizerA11y();
   }
   function postPaneLayout() {
     const mh = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.paneLayout;
     if (mh) mh.postMessage({ left: panePreferred.left, right: panePreferred.right });
+  }
+  function setResizerValue(el, min, max, value, enabled) {
+    if (!el) return;
+    el.setAttribute('aria-valuemin', String(min));
+    el.setAttribute('aria-valuemax', String(max));
+    el.setAttribute('aria-valuenow', String(value));
+    el.tabIndex = enabled ? 0 : -1;
+    el.setAttribute('aria-disabled', enabled ? 'false' : 'true');
+  }
+  function updateResizerA11y() {
+    const desktop = isDesktopPaneMode();
+    setResizerValue(leftResizer, PANE.leftMin, PANE.leftMax, paneLayout.left, desktop);
+    setResizerValue(rightResizer, PANE.rightMin, PANE.rightMax, paneLayout.right,
+      desktop && shell.classList.contains('show-right'));
   }
   function onPanePointerMove(e) {
     if (!paneDrag) return;
@@ -636,15 +665,37 @@
     applyPaneLayout(left, right, { preferred: true });
     postPaneLayout();
   }
+  function nudgePaneWidth(side, delta) {
+    if (!isDesktopPaneMode() || (side === 'right' && !shell.classList.contains('show-right'))) return;
+    const left = side === 'left' ? panePreferred.left + delta : panePreferred.left;
+    const right = side === 'right' ? panePreferred.right - delta : panePreferred.right;
+    applyPaneLayout(left, right, { preferred: true });
+    postPaneLayout();
+  }
+  function onPaneKeydown(side, e) {
+    const step = e.shiftKey || e.altKey ? 40 : 10;
+    if (e.key === 'ArrowLeft') { e.preventDefault(); nudgePaneWidth(side, -step); }
+    else if (e.key === 'ArrowRight') { e.preventDefault(); nudgePaneWidth(side, step); }
+    else if (e.key === 'Home') { e.preventDefault(); resetPaneWidth(side); }
+    else if (e.key === 'End') {
+      e.preventDefault();
+      if (side === 'left') applyPaneLayout(PANE.leftMax, panePreferred.right, { preferred: true });
+      else applyPaneLayout(panePreferred.left, PANE.rightMax, { preferred: true });
+      postPaneLayout();
+    }
+  }
   function bindPaneResizers() {
     if (leftResizer) {
       leftResizer.onpointerdown = e => startPaneDrag('left', leftResizer, e);
       leftResizer.ondblclick = () => resetPaneWidth('left');
+      leftResizer.onkeydown = e => onPaneKeydown('left', e);
     }
     if (rightResizer) {
       rightResizer.onpointerdown = e => startPaneDrag('right', rightResizer, e);
       rightResizer.ondblclick = () => resetPaneWidth('right');
+      rightResizer.onkeydown = e => onPaneKeydown('right', e);
     }
+    updateResizerA11y();
     window.addEventListener('resize', () => applyPaneLayout(panePreferred.left, panePreferred.right));
   }
 
@@ -854,17 +905,16 @@
       h += `<details class="sgroup"${openAttr} data-group><summary><span class="gname">${esc(proj)}</span>`
         + `<span class="gcount">${list.length}</span></summary>`;
       list.forEach(s => {
-        const hay = `${s.preview} ${s.project_label} ${(s.skills || []).join(' ')} ${s.git_branch || ''}`.toLowerCase();
+        const hay = `${s.preview} ${s.project_label} ${s.worktree_name || ''} ${s.raw_project_label || ''} ${(s.skills || []).join(' ')} ${s.git_branch || ''}`.toLowerCase();
         const toks = s.usage && s.usage.total ? ` · ${fmtTok(s.usage.total)}` : '';
-        const chips = (s.skills && s.skills.length)
-          ? `<div class="srow-skills">` + s.skills.slice(0, 3).map(sk =>
-              `<span class="chip skill">${esc(sk)}</span>`).join('') + `</div>`
+        const tags = s.is_worktree && s.worktree_name
+          ? `<div class="srow-tags"><span class="chip worktree">worktree: ${esc(s.worktree_name)}</span></div>`
           : '';
         h += `<button class="srow" data-id="${esc(s.id)}" data-hay="${esc(hay)}">`
           + `<div class="srow-title">${esc(s.preview)}</div>`
           + `<div class="srow-meta">${s.num_user_msgs} 轮 · ${s.num_tool_calls} 工具`
           + (s.num_subagents ? ` · ${s.num_subagents} sub` : '')
-          + ` · ${niceDate(s.last_ts)}${toks}</div>${chips}</button>`;
+          + ` · ${niceDate(s.last_ts)}${toks}</div>${tags}</button>`;
       });
       h += `</details>`;
     }
@@ -1077,7 +1127,8 @@
       if ((!s.__detail_loading || s.__detail_token !== detailToken) && !s.__detail_failed) requestDetail(id, s);
       const msg = s.__detail_loading ? '正在加载详情…'
         : (s.__detail_failed ? '详情加载失败，请稍后刷新重试。' : '当前环境无法请求完整详情。');
-      centerEl.innerHTML = `<div class="dhead"><div class="crumbs">${esc(s.project_label)} / ${esc(s.id)}</div>`
+      const worktree = s.is_worktree && s.worktree_name ? ` · worktree: ${esc(s.worktree_name)}` : '';
+      centerEl.innerHTML = `<div class="dhead"><div class="crumbs">${esc(s.project_label)} / ${esc(s.id)}${worktree}</div>`
         + `<h1>${esc(s.preview)}</h1></div><hr class="hr">`
         + `<div class="empty">${msg}</div>`;
       rightEl.innerHTML = '';
@@ -1114,7 +1165,8 @@
 
     // header — session stats now live in the 详细 (session info) panel
     if (agent.isMain) {
-      c += `<div class="dhead"><div class="crumbs">${esc(s.project_label)} / ${esc(s.id)}</div>`
+      const worktree = s.is_worktree && s.worktree_name ? ` · worktree: ${esc(s.worktree_name)}` : '';
+      c += `<div class="dhead"><div class="crumbs">${esc(s.project_label)} / ${esc(s.id)}${worktree}</div>`
         + `<h1>${esc(s.preview)}</h1></div>`;
     } else {
       const meta = agent.meta || {};
@@ -1219,6 +1271,9 @@
       + infoRow('时长', dur(meta.duration_ms))
       + infoRow('时间', niceDate(meta.first_ts) + ' → ' + niceDate(meta.last_ts))
       + (meta.git_branch ? infoRow('分支', '⎇ ' + meta.git_branch) : '')
+      + (meta.is_worktree && meta.worktree_name ? infoRow('Worktree', meta.worktree_name) : '')
+      + (meta.is_worktree && meta.raw_project ? infoRow('真实目录', meta.raw_project, 'id') : '')
+      + (meta.is_worktree && meta.project_label ? infoRow('归并到', meta.project_label) : '')
       + (!isMain && meta.agent_type ? infoRow('类型', meta.agent_type) : '')
       + (!isMain && meta.agent_id ? infoRow('Agent ID', meta.agent_id) : '')
       + `</div>`;
@@ -1398,9 +1453,10 @@
 
     c += `<div class="ov-sec"><div class="ov-h">最近会话</div><div class="ov-recent">`;
     ss.slice(0, 8).forEach(s => {
+      const worktree = s.is_worktree && s.worktree_name ? ` · worktree: ${esc(s.worktree_name)}` : '';
       c += `<button class="ov-card" data-id="${esc(s.id)}">`
         + `<div class="ov-card-title">${esc(s.preview)}</div>`
-        + `<div class="ov-card-meta">${esc(s.project_label)} · ${s.num_user_msgs} 轮 · ${s.num_tool_calls} 工具 · ${niceDate(s.last_ts)}</div>`
+        + `<div class="ov-card-meta">${esc(s.project_label)} · ${s.num_user_msgs} 轮 · ${s.num_tool_calls} 工具 · ${niceDate(s.last_ts)}${worktree}</div>`
         + `</button>`;
     });
     c += `</div></div>`;
