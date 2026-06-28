@@ -13,13 +13,30 @@ final class SessionStore {
     private var generation = 0
     private let lock = NSLock()
 
+    // 增量摘要缓存：跳过未变文件的逐行 JSON 解析（最贵的一步）。
+    // 缓存绑定 since —— 跨文件去重链依赖时间过滤的取舍，scope 变了就整体重建。
+    private struct CachedSummary {
+        let mtime: Date
+        let size: Int
+        let parsed: ParsedSummary
+    }
+    private var summaryCache: [String: CachedSummary] = [:]
+    private var cachedSince: Scope.Since?
+
     init(root: String) { self.root = root }
 
     // GUI 路径：只解析 main transcript 摘要；subagent 仅记录引用，点击详情时再解析。
+    // 增量：mtime/size 未变的文件直接复用上次解析结果，跳过逐行 JSON 解析。
     func reload(scopeHint: Scope = Scope()) {
         let parser = TranscriptParser(root: root)
-        let files = TranscriptParser.walk(root).map { ($0, parser.classify($0)) }
+        // 排序保证去重链顺序确定（缓存复用时回放的 uuid 前缀状态可复现）。
+        let files = TranscriptParser.walk(root).sorted().map { ($0, parser.classify($0)) }
         let summariesByProject = loadAllSessionIndexSummaries()
+
+        // since 取舍会改变哪些文件参与去重链，缓存只在同一 since 下有效。
+        lock.lock()
+        let prevCache = (cachedSince == scopeHint.since) ? summaryCache : [:]
+        lock.unlock()
 
         var subByParent: [String: [SubagentRef]] = [:]
         for (path, info) in files where info.kind == .subagent {
@@ -36,16 +53,25 @@ final class SessionStore {
         let fm = FileManager.default
         var projectCounts: [String: Int] = [:]
         var next: [SessionSummary] = []
+        var nextCache: [String: CachedSummary] = [:]
         for (path, info) in files where info.kind == .main {
             let label = prettyProject(info.project)
-            if let since = sinceDate,
-               let attrs = try? fm.attributesOfItem(atPath: path),
-               let modified = attrs[.modificationDate] as? Date,
-               modified < since {
-                continue
-            }
+            let attrs = try? fm.attributesOfItem(atPath: path)
+            let modified = attrs?[.modificationDate] as? Date
+            let size = (attrs?[.size] as? NSNumber)?.intValue ?? -1
+            // 时间预过滤：被跳过的文件不解析、不进缓存、不喂去重链（保持原行为）。
+            if let since = sinceDate, let modified, modified < since { continue }
 
-            let parsed = parser.parseSummaryFile(path)
+            let parsed: ParsedSummary
+            if let cached = prevCache[path], let modified,
+               cached.mtime == modified, cached.size == size {
+                parser.seenUuids.formUnion(cached.parsed.newUuids)   // 维持去重链
+                parsed = cached.parsed
+            } else {
+                parsed = parser.parseSummaryFile(path)
+            }
+            if let modified { nextCache[path] = CachedSummary(mtime: modified, size: size, parsed: parsed) }
+
             if parsed.firstTs == nil && parsed.numUser == 0 && parsed.numAssistant == 0 && parsed.numTools == 0 { continue }
             if let since = sinceDate, let last = parsed.lastTs, last < since { continue }
 
@@ -79,6 +105,8 @@ final class SessionStore {
         summaries = next
         allProjectCounts = projectCounts
         sessionIndexSummaries = summariesByProject
+        summaryCache = nextCache
+        cachedSince = scopeHint.since
         detailCache.removeAll()
         generation += 1
         lock.unlock()
@@ -160,6 +188,43 @@ final class SessionStore {
         return topJSON(scope: scope, totalMatched: matched.count, shown: capped.count,
                        controlsProjects: projects, sessions: capped.map { $0.toDict() },
                        matched: matchedAggregate(matched))
+    }
+
+    // 全局正文搜索：在当前 scope 的会话里逐个读 main transcript 原文做大小写不敏感匹配，
+    // 命中则返回该会话摘要 + 一段上下文片段。只在用户主动搜索时触发，不建索引。
+    func searchJSON(query: String, scope: Scope) -> String {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        lock.lock()
+        let source = summaries
+        lock.unlock()
+
+        guard !trimmed.isEmpty else {
+            return jsonString(["query": trimmed, "count": 0, "sessions": []] as [String: Any])
+        }
+
+        let sinceDate = scope.since.date
+        var matched: [[String: Any]] = []
+        for s in source {
+            if let p = scope.projectLabel, s.projectLabel != p { continue }
+            if let since = sinceDate, let last = s.lastTs, last < since { continue }
+            guard let content = try? String(contentsOfFile: s.mainPath, encoding: .utf8),
+                  let range = content.range(of: trimmed, options: [.caseInsensitive]) else { continue }
+            var dict = s.toDict()
+            dict["snippet"] = searchSnippet(content, around: range)
+            matched.append(dict)
+        }
+        return jsonString(["query": trimmed, "count": matched.count, "sessions": matched] as [String: Any])
+    }
+
+    // 从原文 match 位置取 ±80 字符并把 JSONL 噪声压平成一行可读片段。
+    private func searchSnippet(_ content: String, around range: Range<String.Index>) -> String {
+        let pad = 80
+        let start = content.index(range.lowerBound, offsetBy: -pad, limitedBy: content.startIndex) ?? content.startIndex
+        let end = content.index(range.upperBound, offsetBy: pad, limitedBy: content.endIndex) ?? content.endIndex
+        var s = String(content[start..<end])
+        s = s.replacingOccurrences(of: "\\n", with: " ").replacingOccurrences(of: "\\t", with: " ")
+        s = s.replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+        return s.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     // 概览统计：对「命中池全量」（未受 maxSessions 截断）求聚合，前端概览直接用，

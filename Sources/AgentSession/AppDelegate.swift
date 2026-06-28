@@ -1,5 +1,6 @@
 import Cocoa
 import WebKit
+import UniformTypeIdentifiers
 
 final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate,
                          NSToolbarDelegate, WKScriptMessageHandler {
@@ -16,6 +17,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate,
     private var activeReloadSeq = 0
     private var detailRequestSeq = 0
     private var activeDetailRequestSeq = 0
+    private var searchSeq = 0
+    private var activeSearchSeq = 0
     // 同一时间只允许一个重扫真正执行；期间的新请求合并成一次后续补跑。
     private var reloadInFlight = false
     private var reloadPending = false
@@ -70,6 +73,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate,
         config.userContentController.add(self, name: "sessionDetail")
         // 左右侧栏宽度是纯 UI 偏好，由页面拖拽、原生 UserDefaults 持久化。
         config.userContentController.add(self, name: "paneLayout")
+        // 全局正文搜索：扫描当前 scope 全部会话原文，异步回注命中结果。
+        config.userContentController.add(self, name: "search")
+        // 会话动作：在终端继续会话 / 导出为 Markdown。
+        config.userContentController.add(self, name: "resume")
+        config.userContentController.add(self, name: "export")
 
         webView = WKWebView(frame: .zero, configuration: config)
         webView.navigationDelegate = self
@@ -257,6 +265,53 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate,
         }
     }
 
+    // 全局正文搜索：后台扫描当前 scope，回注最新一次请求的结果（旧请求作废）。
+    private func searchInBackground(query: String) {
+        searchSeq += 1
+        let token = searchSeq
+        activeSearchSeq = token
+        let currentScope = scope
+        loadQueue.async {
+            let json = self.store.searchJSON(query: query, scope: currentScope)
+            DispatchQueue.main.async {
+                guard token == self.activeSearchSeq else { return }
+                self.webView.evaluateJavaScript(
+                    "window.__agentSession && window.__agentSession.loadSearchResults && window.__agentSession.loadSearchResults(\(jsStringLiteral(json)));",
+                    completionHandler: nil)
+            }
+        }
+    }
+
+    // 在终端继续会话：打开 Terminal，cd 到会话目录后运行 claude --resume。
+    private func openResumeInTerminal(id: String, cwd: String?) {
+        let dir = (cwd?.isEmpty == false ? cwd! : NSHomeDirectory())
+        func shellQuote(_ s: String) -> String { "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'" }
+        let command = "cd \(shellQuote(dir)) && claude --resume \(shellQuote(id))"
+        let escaped = command.replacingOccurrences(of: "\\", with: "\\\\")
+                             .replacingOccurrences(of: "\"", with: "\\\"")
+        let script = "tell application \"Terminal\"\n  activate\n  do script \"\(escaped)\"\nend tell"
+        guard let apple = NSAppleScript(source: script) else { return }
+        var err: NSDictionary?
+        apple.executeAndReturnError(&err)
+        if let err = err {
+            let alert = NSAlert()
+            alert.messageText = "无法打开终端继续会话"
+            alert.informativeText = (err[NSAppleScript.errorMessage] as? String) ?? "请确认已授权控制「终端」。"
+            alert.runModal()
+        }
+    }
+
+    // 导出 Markdown：前端生成文本，原生弹保存面板写盘。
+    private func saveMarkdown(_ text: String, suggestedName: String) {
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = suggestedName
+        if let md = UTType(filenameExtension: "md") { panel.allowedContentTypes = [md] }
+        panel.beginSheetModal(for: window) { response in
+            guard response == .OK, let url = panel.url else { return }
+            try? text.write(to: url, atomically: true, encoding: .utf8)
+        }
+    }
+
     private func startWatching() {
         watcher = FileWatcher(path: store.root) { [weak self] paths in
             self?.reloadInBackground(changedPaths: paths)
@@ -340,6 +395,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate,
             loadDetailInBackground(id: id, frontendToken: token)
         } else if message.name == "paneLayout" {
             savePaneLayout(body)
+        } else if message.name == "search", let query = body["query"] as? String {
+            searchInBackground(query: query)
+        } else if message.name == "resume", let id = body["id"] as? String {
+            openResumeInTerminal(id: id, cwd: body["cwd"] as? String)
+        } else if message.name == "export", let markdown = body["markdown"] as? String {
+            saveMarkdown(markdown, suggestedName: (body["filename"] as? String) ?? "session.md")
         }
     }
     @objc func toggleInfo() {

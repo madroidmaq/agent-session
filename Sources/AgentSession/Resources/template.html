@@ -174,6 +174,9 @@
   .load-more:hover { background: var(--hover); color: var(--cream); }
   .load-more:disabled { opacity: 0.5; cursor: default; }
   .srow-meta { color: var(--dim); font-size: 10px; margin-top: 4px; }
+  .srow-snip { color: var(--slate); font-size: 11px; line-height: 1.5; margin-top: 5px;
+               overflow: hidden; text-overflow: ellipsis; display: -webkit-box;
+               -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
   .srow-tags { margin-top: 6px; line-height: 1.9; }
 
   .chip { display: inline-block; padding: 1px 8px; border-radius: 3px;
@@ -539,6 +542,11 @@
   if (!Array.isArray(DATA.sessions)) DATA.sessions = [];
   let byId = {};
   let detailToken = 0;
+  // 原生壳才有的桥：独立网页里这些按钮/搜索不渲染或降级为本地过滤。
+  const bridge = name => (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers[name]) || null;
+  const NATIVE = !!(window.webkit && window.webkit.messageHandlers);
+  // 全局正文搜索状态：正在展示搜索结果时，后台自动刷新不应把结果冲掉。
+  let searchActive = false, lastSearchQuery = '';
   const leftEl = document.getElementById('pane-left');
   const centerEl = document.getElementById('pane-center');
   const rightEl = document.getElementById('pane-right');
@@ -856,6 +864,7 @@
 
   // ——— left pane: project-grouped session list (persistent) ———
   function renderSidebar() {
+    searchActive = false;   // 渲染普通列表即退出搜索态
     const sc = DATA.scope || {};
     const ctl = DATA.controls;
     let filters = '';
@@ -875,7 +884,7 @@
       : (sc.total_matched > sc.shown ? `${sc.shown} / ${sc.total_matched} 段对话` : `${sc.shown} 段对话`);
     let h = `<div class="side-head"><div class="cmd"><span class="prompt">&gt;</span> session-viewer</div>`
       + filters
-      + `<input class="side-search" id="list-search" type="search" placeholder="筛选会话…（标题 / 项目 / skill）" aria-label="筛选会话">`
+      + `<input class="side-search" id="list-search" type="search" placeholder="${bridge('search') ? '筛选标题…（回车搜全部正文）' : '筛选会话…（标题 / 项目 / skill）'}" aria-label="筛选会话">`
       + `<span class="side-count" id="list-count">${baseCount}</span></div>`;
 
     // 把时间范围 / 项目下拉接到原生桥（独立网页无此桥，下拉不渲染）。
@@ -961,6 +970,54 @@
       });
       cnt.textContent = q ? `${shown} / ${DATA.sessions.length}` : baseCount;
     };
+    // 回车：把当前输入交给原生做全局正文搜索（扫描 scope 内全部会话原文）。
+    if (box) box.onkeydown = e => {
+      if (e.key !== 'Enter') return;
+      const q = box.value.trim();
+      const mh = bridge('search');
+      if (!q || !mh) return;
+      e.preventDefault();
+      searchActive = true; lastSearchQuery = q;
+      cnt.textContent = '搜索中…';
+      mh.postMessage({ query: q });
+    };
+  }
+
+  // 渲染全局正文搜索结果：扁平列表 + 命中片段，点击照常进入详情。
+  function renderSearchResults(res) {
+    searchActive = true; lastSearchQuery = res.query || lastSearchQuery;
+    const sessions = res.sessions || [];
+    sessions.forEach(s => { if (!byId[s.id]) byId[s.id] = s; });   // 合并以支持跳转
+    let h = `<div class="side-head"><div class="cmd"><span class="prompt">&gt;</span> 搜索结果</div>`
+      + `<button class="load-more" id="search-clear">× 清除搜索「${esc(res.query)}」</button>`
+      + `<span class="side-count">${res.count} 段命中</span></div>`;
+    if (!sessions.length) {
+      h += `<div class="empty">没有会话的正文包含「${esc(res.query)}」。</div>`;
+    } else {
+      h += `<div class="side-list">`;
+      sessions.forEach(s => {
+        const snip = s.snippet ? `<div class="srow-snip">${markHits(s.snippet, res.query)}</div>` : '';
+        h += `<button class="srow" data-id="${esc(s.id)}">`
+          + `<div class="srow-title">${esc(s.preview)}</div>`
+          + `<div class="srow-meta">${esc(s.project_label)} · ${niceDate(s.last_ts)}</div>`
+          + snip + `</button>`;
+      });
+      h += `</div>`;
+    }
+    leftEl.innerHTML = h;
+    const clear = leftEl.querySelector('#search-clear');
+    if (clear) clear.onclick = () => renderSidebar();
+    leftEl.querySelectorAll('.srow').forEach(el =>
+      el.onclick = () => { location.hash = '#s/' + el.dataset.id; shell.classList.remove('show-left'); });
+  }
+
+  function markHits(text, q) {
+    const out = esc(text);
+    if (!q) return out;
+    try {
+      const re = new RegExp('(' + q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')', 'ig');
+      return out.replace(re, '<mark class="hit">$1</mark>');
+    } catch (e) { return out; }
   }
 
   function highlightSidebar(id) {
@@ -1233,8 +1290,9 @@
     c += `<div class="toolbar">`
       + `<input class="search" type="search" placeholder="在当前 Agent 内搜索…（回车跳下一处）" aria-label="搜索会话内容">`
       + `<span class="search-count" id="search-count"></span>`
-      + `<button class="tbtn" data-act="expand">展开全部</button>`
-      + `<button class="tbtn" data-act="collapse">折叠全部</button>`
+      + `<button class="tbtn" data-act="toggle" id="toggle-blocks">展开全部</button>`
+      + (NATIVE ? `<button class="tbtn" data-act="resume" title="在终端继续此会话（claude --resume）">▷ 继续</button>` : '')
+      + (NATIVE ? `<button class="tbtn" data-act="export" title="导出当前对话为 Markdown">⤓ 导出</button>` : '')
       + `<button class="tbtn" id="det-info" data-act="info" title="当前 Agent 信息（Token / 缓存）">ⓘ 详细</button></div>`;
 
     if (anchors.length > 1) {
@@ -1364,6 +1422,56 @@
     });
   }
 
+  // 在终端继续当前会话（claude --resume <id>，cd 到会话目录）。
+  function resumeSession() {
+    if (!ACTIVE) return;
+    const s = ACTIVE.session;
+    const mh = bridge('resume');
+    if (mh) mh.postMessage({ id: s.id, cwd: s.cwd || '' });
+  }
+
+  // 把当前 Agent 的对话导出为 Markdown，交给原生保存面板写盘。
+  function exportSession() {
+    if (!ACTIVE) return;
+    const agent = ACTIVE.agent || (ACTIVE.agents && ACTIVE.agents.find(a => a.isMain)) || (ACTIVE.agents && ACTIVE.agents[0]);
+    const md = sessionToMarkdown(ACTIVE.session, agent);
+    const mh = bridge('export');
+    const fname = String(ACTIVE.session.id || 'session').slice(0, 8) + '.md';
+    if (mh) mh.postMessage({ id: ACTIVE.session.id, filename: fname, markdown: md });
+  }
+
+  function turnText(t) {
+    const v = t && t.text;
+    if (v == null) return '';
+    return typeof v === 'object' ? (v.text || '') : String(v);
+  }
+
+  function sessionToMarkdown(s, agent) {
+    const L = [];
+    L.push(`# ${s.preview || s.id}`, '');
+    L.push(`- Session: \`${s.id}\``);
+    if (s.project_label) L.push(`- Project: ${s.project_label}`);
+    if (s.cwd) L.push(`- CWD: ${s.cwd}`);
+    if (s.git_branch) L.push(`- Branch: ${s.git_branch}`);
+    if (s.first_ts) L.push(`- Time: ${s.first_ts} → ${s.last_ts || ''}`);
+    L.push(`- Stats: ${s.num_user_msgs} 轮 · ${s.num_tool_calls} 工具 · ${s.num_subagents || 0} subagent`, '', '---', '');
+    const conv = (agent && agent.conv) || s.turns || [];
+    for (const t of conv) {
+      if (t.role === 'user' && t.kind === 'slash') L.push('## 👤 User', '', '`/' + (t.cmd || '') + '`', '');
+      else if (t.role === 'user') L.push('## 👤 User', '', turnText(t), '');
+      else if (t.role === 'assistant' && t.kind === 'thinking') L.push('> 💭 ' + turnText(t).replace(/\n/g, '\n> '), '');
+      else if (t.role === 'assistant' && t.kind === 'text') L.push('## 🤖 Assistant', '', turnText(t), '');
+      else if (t.kind === 'tool_use') {
+        L.push('### 🔧 ' + (t.name || 'tool'), '');
+        if (t.summary) L.push('`' + String(t.summary).replace(/`/g, '') + '`', '');
+      } else if (t.kind === 'tool_result') {
+        const c = t.content, body = c && typeof c === 'object' ? c.text : c;
+        if (body) L.push('```', String(body).slice(0, 4000), '```', '');
+      }
+    }
+    return L.join('\n');
+  }
+
   function bindTabInteractions() {
     // switch tabs
     centerEl.querySelectorAll('.tab').forEach(b => b.onclick = () => {
@@ -1377,10 +1485,15 @@
     });
     // expand / collapse all (center thinking blocks + the tool card currently shown)
     centerEl.querySelectorAll('.tbtn').forEach(b => b.onclick = () => {
-      if (b.dataset.act === 'info') { toggleInfo(); return; }
-      const open = b.dataset.act === 'expand';
-      centerEl.querySelectorAll('details.blk').forEach(d => d.open = open);
-      rightEl.querySelectorAll('details.tcard').forEach(d => d.open = open);
+      const act = b.dataset.act;
+      if (act === 'info') { toggleInfo(); return; }
+      if (act === 'resume') { resumeSession(); return; }
+      if (act === 'export') { exportSession(); return; }
+      // 智能切换：有任何折叠的就全部展开，否则全部折叠；按钮文字反映下一步动作。
+      const blocks = [...centerEl.querySelectorAll('details.blk'), ...rightEl.querySelectorAll('details.tcard')];
+      const open = blocks.some(d => !d.open);
+      blocks.forEach(d => d.open = open);
+      b.textContent = open ? '折叠全部' : '展开全部';
     });
     // middle tool anchor -> show ONLY that tool's detail on the right
     centerEl.querySelectorAll('.tool-anchor[data-tool]').forEach(b => b.onclick = () => showTool(b.dataset.tool));
@@ -1573,7 +1686,9 @@
       if (!Array.isArray(DATA.sessions)) DATA.sessions = [];
       rebuildIndex();
       if (state && pinned && !shouldRoute) byId[state.id] = pinned;
-      renderSidebar();
+      // 搜索结果展示中：用最新数据重跑搜索，而不是回退到普通列表把结果冲掉。
+      if (searchActive && lastSearchQuery && bridge('search')) bridge('search').postMessage({ query: lastSearchQuery });
+      else renderSidebar();
       if (shouldRoute) route();
       else if (ACTIVE && ACTIVE.id === state.id && ACTIVE.pending) {
         if (pinned) { pinned.__detail_loading = false; pinned.__detail_failed = false; }
@@ -1602,6 +1717,10 @@
       const idx = DATA.sessions.findIndex(x => x.id === id);
       if (idx >= 0) DATA.sessions[idx] = detail;
       if (isCurrent) renderDetail(id);
+    },
+    loadSearchResults(jsonText) {
+      let res; try { res = JSON.parse(jsonText); } catch (e) { return; }
+      renderSearchResults(res);
     },
     toggleInfo
   };

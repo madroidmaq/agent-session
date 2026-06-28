@@ -32,6 +32,9 @@ struct ParsedSummary {
     var numTools = 0
     var usage = Usage()
     var preview: String = "(no text prompt)"
+    // 本文件首次贡献的 uuid（即首次加入 seenUuids 的那些）。增量复用缓存时
+    // 回放它们，维持跨文件去重链（resumed 会话重放历史条目）。
+    var newUuids: [String] = []
 }
 
 struct ProjectIdentity {
@@ -59,7 +62,8 @@ struct FileInfo {
 final class TranscriptParser {
     let root: String
     // resumed 会话会重放历史条目，按 uuid 全局去重（一次扫描共用一个实例）。
-    private var seenUuids = Set<String>()
+    // internal：SessionStore 增量复用缓存时会回放未变文件的 uuid 以维持去重链。
+    var seenUuids = Set<String>()
 
     init(root: String) { self.root = root }
 
@@ -151,6 +155,7 @@ final class TranscriptParser {
             if let uuid = e["uuid"] as? String {
                 if seenUuids.contains(uuid) { continue }
                 seenUuids.insert(uuid)
+                p.newUuids.append(uuid)
             }
             if let c = e["cwd"] as? String, p.cwd == nil { p.cwd = c }
             if let g = e["gitBranch"] as? String, p.gitBranch == nil { p.gitBranch = g }
