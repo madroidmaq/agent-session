@@ -245,18 +245,56 @@
   .dhead .stats { color: var(--dim); font-size: 11px; margin-top: 12px;
                   display: flex; gap: 18px; flex-wrap: wrap; }
   .dhead .stats b { color: var(--clay); font-weight: 700; }
-  .toc { margin: 14px 0 4px; }
-  .toc summary { cursor: pointer; color: var(--slate); list-style: none; font-size: 12px; }
-  .toc summary::-webkit-details-marker { display: none; }
-  .toc summary::before { content: '▸ '; }
-  .toc[open] summary::before { content: '▾ '; }
-  .toc ol { margin: 10px 0 0; padding-left: 0; list-style: none;
-            max-height: 280px; overflow: auto; }
-  .toc li { padding: 3px 0; }
-  .toc a { color: var(--dim); text-decoration: none; display: block; font-size: 12px;
-           overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .toc a:hover { color: var(--clay); }
-  .toc a .n { color: var(--slate-faint); margin-right: 10px; }
+  /* ——— right-edge table of contents: ONE card hugging the center pane's
+     right edge as a thin tick-spine, widening on hover/focus to reveal the
+     turn list. A single continuous hover surface — spine and list live in the
+     same box, so there is no gap to fall through. ——— */
+  .toc-rail { position: sticky; top: 0; height: 0; z-index: 6; pointer-events: none; }
+  .toc-rail-inner {
+    position: absolute; top: 16px; right: -26px;
+    display: flex; justify-content: flex-end; align-items: flex-start; gap: 12px;
+    width: 40px; overflow: hidden;
+    padding: 8px 4px 8px 8px; border-radius: 10px;
+    background: transparent; border: 1px solid transparent; box-shadow: none;
+    pointer-events: auto;
+    transition: width .22s ease, background .22s ease, border-color .22s ease, box-shadow .22s ease;
+  }
+  .toc-rail-inner:hover, .toc-rail-inner:focus-within {
+    width: 396px;
+    background: var(--titlebar); border-color: var(--outline);
+    box-shadow: 0 18px 50px rgba(20,20,19,0.5);
+  }
+  /* the spine — pinned right, always visible; doubles as the scroll-spy display */
+  .toc-ticks { order: 1; flex: 0 0 auto;
+    display: flex; flex-direction: column; align-items: flex-end; gap: 6px;
+    max-height: 62vh; overflow: hidden; }
+  .toc-tick { display: block; width: 14px; height: 2px; border-radius: 1px;
+    background: var(--slate-faint); cursor: pointer;
+    transition: width .18s ease, background .18s ease; }
+  .toc-tick:hover { width: 22px; background: var(--slate); }
+  .toc-tick.active { width: 24px; background: var(--clay); }
+  /* the turn list — clipped to zero width while collapsed, wiped in on expand */
+  .toc-panel { order: 0; flex: 0 0 auto; width: 342px;
+    max-height: 62vh; overflow-y: auto; overflow-x: hidden;
+    opacity: 0; transition: opacity .18s ease; }
+  .toc-rail-inner:hover .toc-panel,
+  .toc-rail-inner:focus-within .toc-panel { opacity: 1; }
+  .toc-panel-head { color: var(--slate); font-size: 11px; margin-bottom: 9px; white-space: nowrap; }
+  .toc-panel ol { margin: 0; padding: 0; list-style: none; }
+  .toc-panel li { padding: 1px 0; }
+  .toc-panel a { color: var(--dim); text-decoration: none; display: flex; gap: 10px;
+    align-items: flex-start; font-size: 12px; line-height: 1.45; padding: 4px 6px; border-radius: 5px; }
+  .toc-panel a:hover { color: var(--clay); background: var(--hover); }
+  .toc-panel a.active { color: var(--clay); }
+  .toc-panel a .n { color: var(--slate-faint); flex-shrink: 0; padding-top: 1px; }
+  .toc-panel a.active .n { color: var(--clay); }
+  /* up to two lines per turn, then ellipsis */
+  .toc-panel a .t { min-width: 0; display: -webkit-box; -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; white-space: normal;
+    overflow-wrap: anywhere; }
+  @media (prefers-reduced-motion: reduce) {
+    .toc-tick, .toc-panel, .toc-rail-inner { transition: none; }
+  }
 
   /* ——— exchanges: one human turn + the agent's work beneath it ——— */
   .exchange { margin: 24px 0; }
@@ -1296,13 +1334,19 @@
       + `<button class="tbtn" id="det-info" data-act="info" title="当前 Agent 信息（Token / 缓存）">ⓘ 详细</button></div>`;
 
     if (anchors.length > 1) {
-      c += `<details class="toc"><summary>目录 · ${anchors.length} 轮对话</summary><ol>`;
+      let ticks = '', list = '';
       anchors.forEach((t, i) => {
+        const num = String(i + 1).padStart(2, '0');
         const label = t.kind === 'slash' ? '/' + t.cmd : (t.text && t.text.text || '');
-        c += `<li><a href="#turn-${i}" data-turn="${i}"><span class="n">${String(i + 1).padStart(2, '0')}</span>`
-          + `${esc(label.replace(/\s+/g, ' ').slice(0, 90))}</a></li>`;
+        const clean = esc(label.replace(/\s+/g, ' ').slice(0, 130));
+        ticks += `<a class="toc-tick" href="#turn-${i}" data-turn="${i}" aria-label="第 ${i + 1} 轮"></a>`;
+        list += `<li><a href="#turn-${i}" data-turn="${i}"><span class="n">${num}</span>`
+          + `<span class="t">${clean}</span></a></li>`;
       });
-      c += `</ol></details>`;
+      c += `<nav class="toc-rail" aria-label="对话目录"><div class="toc-rail-inner">`
+        + `<div class="toc-ticks">${ticks}</div>`
+        + `<div class="toc-panel"><div class="toc-panel-head">目录 · ${anchors.length} 轮对话</div>`
+        + `<ol>${list}</ol></div></div></nav>`;
     }
     c += `<hr class="hr">`;
     c += mid || `<div class="empty">这个 Agent 没有可显示的对话。</div>`;
@@ -1472,13 +1516,38 @@
     return L.join('\n');
   }
 
+  let tocSpy = null;
+  // scroll-spy: mark the tick/list-item for the turn currently in the top band
+  function setupTocSpy() {
+    if (tocSpy) { tocSpy.disconnect(); tocSpy = null; }
+    const rail = centerEl.querySelector('.toc-rail');
+    if (!rail) return;
+    const turns = [...centerEl.querySelectorAll('.msg-user[id^="turn-"]')];
+    if (!turns.length) return;
+    const ticks = rail.querySelectorAll('.toc-tick');
+    const items = rail.querySelectorAll('.toc-panel a[data-turn]');
+    const visible = new Set();
+    const setActive = idx => {
+      ticks.forEach((t, i) => t.classList.toggle('active', i === idx));
+      items.forEach((a, i) => a.classList.toggle('active', i === idx));
+    };
+    tocSpy = new IntersectionObserver(entries => {
+      entries.forEach(e => {
+        const i = +e.target.id.slice(5);
+        if (e.isIntersecting) visible.add(i); else visible.delete(i);
+      });
+      if (visible.size) setActive(Math.min(...visible));
+    }, { root: centerEl, rootMargin: '0px 0px -70% 0px', threshold: 0 });
+    turns.forEach(t => tocSpy.observe(t));
+  }
+
   function bindTabInteractions() {
     // switch tabs
     centerEl.querySelectorAll('.tab').forEach(b => b.onclick = () => {
       if (ACTIVE) setSessionRoute(ACTIVE.id, b.dataset.tab, ACTIVE.rightMode === 'info' ? 'info' : null);
     });
-    // toc jump
-    centerEl.querySelectorAll('.toc a').forEach(a => a.onclick = e => {
+    // toc jump (tick-rail + reveal panel)
+    centerEl.querySelectorAll('.toc-rail a[data-turn]').forEach(a => a.onclick = e => {
       e.preventDefault();
       const el = document.getElementById('turn-' + a.dataset.turn);
       if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -1501,6 +1570,8 @@
     centerEl.querySelectorAll('.tool-anchor.agent-jump[data-tab]').forEach(b => b.onclick = () => {
       if (ACTIVE && b.dataset.tab) setSessionRoute(ACTIVE.id, b.dataset.tab, null);
     });
+    // highlight the tick for whichever turn is near the top of the viewport
+    setupTocSpy();
     // bind the right pane's initial (placeholder) controls
     bindRightInteractions();
     // in-conversation search across the active tab (center + right)
