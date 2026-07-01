@@ -321,6 +321,8 @@
   .msg-user .text { font-family: var(--serif); font-size: 15.5px; line-height: 1.7;
                     word-break: break-word; }
   .msg-user.slash .text { font-family: var(--mono); font-size: 13px; color: var(--clay); font-weight: 700; }
+  .msg-user.slash .cmd-args { display: block; margin-top: 7px; font-family: var(--serif); font-size: 15px;
+                              line-height: 1.65; color: var(--cream); font-weight: 400; white-space: pre-wrap; }
 
   /* expandable skill body (SKILL.md injected by a slash command) */
   .skill-doc { margin-top: 11px; border-top: 1px dashed rgba(217,119,87,0.3); padding-top: 9px; }
@@ -879,7 +881,12 @@
 
   function userBubble(t, anchorId) {
     const id = anchorId != null ? ` id="turn-${anchorId}"` : '';
-    const body = t.kind === 'slash' ? '/' + esc(t.cmd) : mdProse(t.text);
+    const slashArgs = t.kind === 'slash' && t.args && (t.args.text || '');
+    const body = t.kind === 'slash'
+      ? '<span class="cmd-name">/' + esc(t.cmd) + '</span>'
+        + (slashArgs ? '<span class="cmd-args">' + esc(slashArgs) + '</span>'
+          + (t.args.clipped ? `<div class="clip-note">… 已截断，原文 ${t.args.full_len.toLocaleString()} 字符</div>` : '') : '')
+      : mdProse(t.text);
     const doc = (t.kind === 'slash' && t.skill_body)
       ? `<details class="skill-doc"><summary>查看 skill 内容</summary>`
         + `<div class="skill-body text">${mdProse(t.skill_body)}</div></details>`
@@ -1517,7 +1524,8 @@
     L.push(`- Stats: ${s.num_user_msgs} 轮 · ${s.num_tool_calls} 工具 · ${s.num_subagents || 0} subagent`, '', '---', '');
     const conv = (agent && agent.conv) || s.turns || [];
     for (const t of conv) {
-      if (t.role === 'user' && t.kind === 'slash') L.push('## 👤 User', '', '`/' + (t.cmd || '') + '`', '');
+      if (t.role === 'user' && t.kind === 'slash') L.push('## 👤 User', '', '`/' + (t.cmd || '') + '`'
+        + (t.args && t.args.text ? '\n\n' + t.args.text : ''), '');
       else if (t.role === 'user') L.push('## 👤 User', '', turnText(t), '');
       else if (t.role === 'assistant' && t.kind === 'thinking') L.push('> 💭 ' + turnText(t).replace(/\n/g, '\n> '), '');
       else if (t.role === 'assistant' && t.kind === 'text') L.push('## 🤖 Assistant', '', turnText(t), '');

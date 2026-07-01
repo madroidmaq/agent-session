@@ -141,7 +141,8 @@ final class TranscriptParser: TranscriptParsing {
             let cleaned = cleanUserText(raw)
             if let cmd = slashFrom(raw) {
                 appendSkill(cmd)
-                setPreview("/" + cmd)
+                if let args = slashArgs(raw) { setPreview("/" + cmd + " " + args) }
+                else { setPreview("/" + cmd) }
                 p.numUser += 1
             } else if !cleaned.isEmpty {
                 setPreview(cleaned)
@@ -362,7 +363,9 @@ final class TranscriptParser: TranscriptParsing {
         let cleaned = cleanUserText(raw)
         if let cmd = slashFrom(raw) {
             skills.insert(cmd); if !p.skills.contains(cmd) { p.skills.append(cmd) }
-            p.turns.append(["role": "user", "kind": "slash", "cmd": cmd, "text": cleaned, "ts": ts ?? NSNull()])
+            var turn: [String: Any] = ["role": "user", "kind": "slash", "cmd": cmd, "text": cleaned, "ts": ts ?? NSNull()]
+            if let args = slashArgs(raw) { turn["args"] = clip(args, MAX_TEXT_CHARS) }
+            p.turns.append(turn)
             lastSlashIdx = p.turns.count - 1
             p.numUser += 1
         } else if !cleaned.isEmpty {
@@ -444,6 +447,13 @@ func isNoiseUserText(_ text: String) -> Bool {
 func slashFrom(_ text: String) -> String? {
     guard let g = firstGroup(text, #"<command-(?:name|message)>/?([^<]+)</command-"#) else { return nil }
     return g.trimmingCharacters(in: .whitespacesAndNewlines)
+}
+
+// slash 命令后用户输入的参数文本（<command-args> 内容），无则返回 nil
+func slashArgs(_ text: String) -> String? {
+    guard let g = firstGroup(text, #"<command-args>([\s\S]*?)</command-args>"#) else { return nil }
+    let s = g.trimmingCharacters(in: .whitespacesAndNewlines)
+    return s.isEmpty ? nil : s
 }
 
 func cleanUserText(_ text: String) -> String {
