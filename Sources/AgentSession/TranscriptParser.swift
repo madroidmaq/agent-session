@@ -53,13 +53,14 @@ struct FileInfo {
     let kind: Kind
     var agentId: String? = nil
     var agentType: String? = nil
+    var source: String = "claude"
 
     var isWorktree: Bool { worktreeName != nil }
 
     enum Kind { case main, subagent }
 }
 
-final class TranscriptParser {
+final class TranscriptParser: TranscriptParsing {
     let root: String
     // resumed 会话会重放历史条目，按 uuid 全局去重（一次扫描共用一个实例）。
     // internal：SessionStore 增量复用缓存时会回放未变文件的 uuid 以维持去重链。
@@ -68,6 +69,8 @@ final class TranscriptParser {
     init(root: String) { self.root = root }
 
     // MARK: - 文件发现 / 分类
+
+    func walk() -> [String] { Self.walk(root) }
 
     static func walk(_ root: String) -> [String] {
         let fm = FileManager.default

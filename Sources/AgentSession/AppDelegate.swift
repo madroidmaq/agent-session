@@ -7,7 +7,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate,
     private var window: NSWindow!
     private var webView: WKWebView!
     private let store: SessionStore
+    private let codexRoot: String?
     private var watcher: FileWatcher?
+    private var codexWatcher: FileWatcher?
 
     private var scope = Scope()
     private var webReady = false
@@ -42,7 +44,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate,
 
     override init() {
         let root = ("~/.claude/projects" as NSString).expandingTildeInPath
-        store = SessionStore(root: root)
+        // 只扫官方默认目录：Claude Code = ~/.claude/projects，Codex = ~/.codex/sessions。
+        //
+        // 已知局限：这两个目录都可被环境变量改写，此时会话不在默认位置、本 app 看不到：
+        //   - Codex：CODEX_HOME 改写 ~/.codex（例如内网 provider 工具会把它指到
+        //     ~/.zepp/codex 以隔离自定义 provider 的 config.toml / auth.json / 会话记录）。
+        //   - Claude Code：CLAUDE_CONFIG_DIR 改写 ~/.claude。
+        // GUI 从 Finder 启动时拿不到 shell 里 export 的这些变量，故暂不自动发现。
+        // 如需支持：读取上述环境变量 / 提供设置项让用户手动指定额外根目录，再并入数据源。
+        let codex = ("~/.codex/sessions" as NSString).expandingTildeInPath
+        codexRoot = FileManager.default.fileExists(atPath: codex) ? codex : nil
+        store = SessionStore(claudeRoot: root, codexRoot: codexRoot)
         super.init()
     }
 
@@ -96,7 +108,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate,
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
-    func applicationWillTerminate(_ notification: Notification) { watcher?.stop() }
+    func applicationWillTerminate(_ notification: Notification) { watcher?.stop(); codexWatcher?.stop() }
 
     // MARK: - WebView
 
@@ -283,10 +295,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate,
     }
 
     // 在终端继续会话：打开 Terminal，cd 到会话目录后运行 claude --resume。
-    private func openResumeInTerminal(id: String, cwd: String?) {
+    private func openResumeInTerminal(id: String, cwd: String?, source: String) {
         let dir = (cwd?.isEmpty == false ? cwd! : NSHomeDirectory())
         func shellQuote(_ s: String) -> String { "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'" }
-        let command = "cd \(shellQuote(dir)) && claude --resume \(shellQuote(id))"
+        let resumeCmd = source == "codex"
+            ? "codex resume \(shellQuote(id))"
+            : "claude --resume \(shellQuote(id))"
+        let command = "cd \(shellQuote(dir)) && \(resumeCmd)"
         let escaped = command.replacingOccurrences(of: "\\", with: "\\\\")
                              .replacingOccurrences(of: "\"", with: "\\\"")
         let script = "tell application \"Terminal\"\n  activate\n  do script \"\(escaped)\"\nend tell"
@@ -317,6 +332,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate,
             self?.reloadInBackground(changedPaths: paths)
         }
         watcher?.start()
+        // Codex 根：变更路径无法用 Claude 的目录分类还原 sessionId，直接触发一次全量重扫
+        //（增量摘要缓存仍会跳过未变文件，成本可控）。
+        if let codexRoot {
+            codexWatcher = FileWatcher(path: codexRoot) { [weak self] _ in
+                self?.reloadInBackground()
+            }
+            codexWatcher?.start()
+        }
     }
 
     // MARK: - 工具栏
@@ -398,7 +421,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate,
         } else if message.name == "search", let query = body["query"] as? String {
             searchInBackground(query: query)
         } else if message.name == "resume", let id = body["id"] as? String {
-            openResumeInTerminal(id: id, cwd: body["cwd"] as? String)
+            openResumeInTerminal(id: id, cwd: body["cwd"] as? String,
+                                 source: (body["source"] as? String) ?? "claude")
         } else if message.name == "export", let markdown = body["markdown"] as? String {
             saveMarkdown(markdown, suggestedName: (body["filename"] as? String) ?? "session.md")
         }

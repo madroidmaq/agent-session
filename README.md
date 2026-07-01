@@ -1,8 +1,9 @@
 # AgentSession
 
-A self-contained native macOS app for reading back your **Claude Code** session history.
-It reads the JSONL transcripts under `~/.claude/projects` and renders them in a clean
-three-pane reading UI (session list / conversation thread / tool details) via WKWebView.
+A self-contained native macOS app for reading back your **Claude Code** and **Codex**
+session history. It reads the JSONL transcripts under `~/.claude/projects` and
+`~/.codex/sessions` and renders them in a clean three-pane reading UI
+(session list / conversation thread / tool details) via WKWebView.
 
 [简体中文](README.zh-CN.md)
 
@@ -16,16 +17,34 @@ three-pane reading UI (session list / conversation thread / tool details) via WK
 
 - **Pure-Swift parsing**, no Node required — scans on launch and injects data straight
   into the WebView (no more 11 MB generated HTML snapshots).
+- **Dual sources** — loads both Claude Code (`~/.claude/projects`) and Codex
+  (`~/.codex/sessions`); Codex sessions are tagged with a `codex` badge.
 - **Three-pane reader** — session list, conversation thread, and per-tool details.
 - **Sidebar filters** — time range (7d / 24h / 30d / all) and per-project filtering.
 - **Live auto-refresh** — FSEvents watches `~/.claude/projects`; new messages reload in
   ~1s while keeping your current selection.
 - **Native dark chrome** — dark unified titlebar that blends into the content.
 
+## Known limitations
+
+Only the **official default directories** are scanned: Claude Code = `~/.claude/projects`,
+Codex = `~/.codex/sessions`. Both can be relocated via environment variables, in which case
+those sessions live elsewhere and this app won't see them:
+
+- **Codex**: `CODEX_HOME` overrides `~/.codex`. For example, internal/custom-provider
+  tooling may point it at something like `~/.zepp/codex` (to isolate the custom provider's
+  `config.toml` / `auth.json` / session history), so those sessions land under
+  `~/.zepp/codex/sessions`.
+- **Claude Code**: `CLAUDE_CONFIG_DIR` overrides `~/.claude`.
+
+A GUI app launched from Finder doesn't inherit shell-`export`ed variables, so custom
+directories aren't auto-discovered for now. If needed, this could read those env vars or
+add a setting to point at extra roots.
+
 ## Privacy
 
-AgentSession is **fully local and read-only**. It only reads `~/.claude/projects` on your
-machine — it makes no network calls and uploads nothing.
+AgentSession is **fully local and read-only**. It only reads `~/.claude/projects` and
+`~/.codex/sessions` on your machine — it makes no network calls and uploads nothing.
 
 ## Install
 

@@ -3,7 +3,9 @@ import Foundation
 // 扫描 ~/.claude/projects，GUI 路径先解析轻量摘要，详情页再按需解析完整 turns/subagents。
 // --dump-json 仍走 reloadFull()，保持原完整 JSON schema。
 final class SessionStore {
-    let root: String
+    let root: String                       // Claude 根（sessions-index 扫描 + JSON 输出的 root 字段）
+    // 数据源：Claude + 可选 Codex。每次扫描按需 new 出解析器实例（seenUuids 去重链不能跨扫描复用）。
+    private let sources: [(kind: String, root: String)]
     private(set) var sessions: [Session] = []             // full dump 用完整缓存
     private(set) var summaries: [SessionSummary] = []     // GUI 首屏用摘要缓存
 
@@ -23,14 +25,41 @@ final class SessionStore {
     private var summaryCache: [String: CachedSummary] = [:]
     private var cachedSince: Scope.Since?
 
-    init(root: String) { self.root = root }
+    init(root: String) {
+        self.root = root
+        self.sources = [(kind: "claude", root: root)]
+    }
+
+    // GUI 入口：Claude + 官方 Codex 目录。codexRoot 为 nil 时退化为纯 Claude。
+    // 说明：只扫官方默认目录，不处理自定义 CODEX_HOME（见 AppDelegate 的备注）。
+    init(claudeRoot: String, codexRoot: String?) {
+        self.root = claudeRoot
+        var s: [(kind: String, root: String)] = [(kind: "claude", root: claudeRoot)]
+        if let codexRoot { s.append((kind: "codex", root: codexRoot)) }
+        self.sources = s
+    }
+
+    private func makeParser(kind: String, root: String) -> TranscriptParsing {
+        kind == "codex" ? CodexParser(root: root) : TranscriptParser(root: root)
+    }
+
+    // 扫描全部数据源，返回 (文件路径, 分类信息, 该源解析器)。解析器实例按源复用（同一次扫描内）。
+    private func discoverFiles() -> [(path: String, info: FileInfo, parser: TranscriptParsing)] {
+        var out: [(path: String, info: FileInfo, parser: TranscriptParsing)] = []
+        for src in sources {
+            let parser = makeParser(kind: src.kind, root: src.root)
+            for path in parser.walk().sorted() {
+                out.append((path, parser.classify(path), parser))
+            }
+        }
+        return out
+    }
 
     // GUI 路径：只解析 main transcript 摘要；subagent 仅记录引用，点击详情时再解析。
     // 增量：mtime/size 未变的文件直接复用上次解析结果，跳过逐行 JSON 解析。
     func reload(scopeHint: Scope = Scope()) {
-        let parser = TranscriptParser(root: root)
         // 排序保证去重链顺序确定（缓存复用时回放的 uuid 前缀状态可复现）。
-        let files = TranscriptParser.walk(root).sorted().map { ($0, parser.classify($0)) }
+        let files = discoverFiles()
         let summariesByProject = loadAllSessionIndexSummaries()
 
         // since 取舍会改变哪些文件参与去重链，缓存只在同一 since 下有效。
@@ -39,7 +68,7 @@ final class SessionStore {
         lock.unlock()
 
         var subByParent: [String: [SubagentRef]] = [:]
-        for (path, info) in files where info.kind == .subagent {
+        for (path, info, _) in files where info.kind == .subagent {
             subByParent[info.sessionId, default: []].append(SubagentRef(
                 path: path,
                 agentId: info.agentId,
@@ -54,7 +83,7 @@ final class SessionStore {
         var projectCounts: [String: Int] = [:]
         var next: [SessionSummary] = []
         var nextCache: [String: CachedSummary] = [:]
-        for (path, info) in files where info.kind == .main {
+        for (path, info, parser) in files where info.kind == .main {
             let label = prettyProject(info.project)
             let attrs = try? fm.attributesOfItem(atPath: path)
             let modified = attrs?[.modificationDate] as? Date
@@ -65,7 +94,8 @@ final class SessionStore {
             let parsed: ParsedSummary
             if let cached = prevCache[path], let modified,
                cached.mtime == modified, cached.size == size {
-                parser.seenUuids.formUnion(cached.parsed.newUuids)   // 维持去重链
+                // 维持 Claude resumed 会话的跨文件 uuid 去重链（Codex 无 uuid，newUuids 为空）。
+                (parser as? TranscriptParser)?.seenUuids.formUnion(cached.parsed.newUuids)
                 parsed = cached.parsed
             } else {
                 parsed = parser.parseSummaryFile(path)
@@ -78,6 +108,7 @@ final class SessionStore {
             projectCounts[label, default: 0] += 1
             next.append(SessionSummary(
                 id: info.sessionId,
+                source: info.source,
                 project: info.project,
                 projectLabel: label,
                 rawProject: info.rawProject,
@@ -114,13 +145,12 @@ final class SessionStore {
 
     // 完整扫描 + 解析（耗时）：用于 --dump-json / golden 对照。
     func reloadFull() {
-        let parser = TranscriptParser(root: root)
-        let files = TranscriptParser.walk(root).map { ($0, parser.classify($0)) }
+        let files = discoverFiles()
         let summariesByProject = loadAllSessionIndexSummaries()
 
         var subByParent: [String: [SubagentRef]] = [:]
         var projectCounts: [String: Int] = [:]
-        for (path, info) in files {
+        for (path, info, _) in files {
             if info.kind == .main {
                 projectCounts[prettyProject(info.project), default: 0] += 1
             } else {
@@ -133,7 +163,7 @@ final class SessionStore {
         }
 
         var result: [Session] = []
-        for (path, info) in files where info.kind == .main {
+        for (path, info, parser) in files where info.kind == .main {
             if let session = buildSession(path: path, info: info, subagents: subByParent[info.sessionId] ?? [],
                                           parser: parser, summariesByProject: summariesByProject) {
                 result.append(session)
@@ -267,8 +297,9 @@ final class SessionStore {
 
         let info = FileInfo(project: summary.project, rawProject: summary.rawProject,
                             worktreeName: summary.worktreeName,
-                            sessionId: summary.id, kind: .main)
-        let parser = TranscriptParser(root: root)
+                            sessionId: summary.id, kind: .main, source: summary.source)
+        let srcRoot = sources.first(where: { $0.kind == summary.source })?.root ?? root
+        let parser = makeParser(kind: summary.source, root: srcRoot)
         guard let session = buildSession(path: summary.mainPath, info: info,
                                          subagents: summary.subagents, parser: parser,
                                          summariesByProject: summariesByProject) else { return nil }
@@ -302,7 +333,7 @@ final class SessionStore {
     }
 
     private func buildSession(path: String, info: FileInfo,
-                              subagents: [SubagentRef], parser: TranscriptParser,
+                              subagents: [SubagentRef], parser: TranscriptParsing,
                               summariesByProject: [String: [String: String]]) -> Session? {
         let parsed = parser.parseFile(path)
         if parsed.turns.isEmpty && parsed.firstTs == nil { return nil }
@@ -373,6 +404,7 @@ final class SessionStore {
 
         return Session(
             id: info.sessionId,
+            source: info.source,
             project: info.project,
             projectLabel: prettyProject(info.project),
             rawProject: info.rawProject,

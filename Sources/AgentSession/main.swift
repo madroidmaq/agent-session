@@ -6,7 +6,9 @@ import Cocoa
 // Headless 模式：--dump-json 仅扫描并打印全量 JSON（用于 golden 对照/脚本），不启动 GUI。
 if CommandLine.arguments.contains("--dump-json") {
     let root = ("~/.claude/projects" as NSString).expandingTildeInPath
-    let store = SessionStore(root: root)
+    let codex = ("~/.codex/sessions" as NSString).expandingTildeInPath
+    let codexRoot = FileManager.default.fileExists(atPath: codex) ? codex : nil
+    let store = SessionStore(claudeRoot: root, codexRoot: codexRoot)
     store.reloadFull()
     var scope = Scope()
     scope.since = .all

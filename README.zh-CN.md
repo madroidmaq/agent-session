@@ -1,7 +1,8 @@
 # AgentSession
 
-一个自包含的原生 macOS App，用来回看 **Claude Code** 的会话记录。读取 `~/.claude/projects`
-下的 JSONL transcript，用 WKWebView 渲染三栏阅读界面（会话列表 / 对话主线 / 工具详情）。
+一个自包含的原生 macOS App，用来回看 **Claude Code** 与 **Codex** 的会话记录。读取
+`~/.claude/projects` 与 `~/.codex/sessions` 下的 JSONL transcript，用 WKWebView 渲染三栏阅读界面
+（会话列表 / 对话主线 / 工具详情）。
 
 [English](README.md)
 
@@ -14,14 +15,24 @@
 ## 特性
 
 - **纯 Swift 解析**，不依赖 node —— 启动即扫描，运行时把数据注入 WebView（不再生成 11MB HTML 快照）。
+- **双数据源**：同时加载 Claude Code (`~/.claude/projects`) 与 Codex (`~/.codex/sessions`)，Codex 会话带 `codex` 徽标区分。
 - **三栏阅读**：会话列表、对话主线、逐工具详情。
 - **侧栏筛选**：时间范围（7天 / 24小时 / 30天 / 全部）、项目筛选。
 - **文件监听自动刷新**：FSEvents 监听 `~/.claude/projects`，有新消息约 1s 内自动重载（保持当前选中）。
 - **原生暗色外壳**：暗色统一标题栏，与内容融为一体。
 
+## 已知局限
+
+只扫描**官方默认目录**：Claude Code = `~/.claude/projects`，Codex = `~/.codex/sessions`。这两个目录都可被环境变量改写，此时会话不落在默认位置，本 app 看不到：
+
+- **Codex**：`CODEX_HOME` 改写 `~/.codex`。例如内网/自定义 provider 的工具链会把它指到 `~/.zepp/codex` 之类的位置（用于隔离自定义 provider 的 `config.toml` / `auth.json` / 会话记录），这批会话会落在 `~/.zepp/codex/sessions`。
+- **Claude Code**：`CLAUDE_CONFIG_DIR` 改写 `~/.claude`。
+
+GUI 从 Finder 启动时拿不到 shell 里 `export` 的这些变量，故暂不自动发现自定义目录。如有需要，可后续读取上述环境变量或提供设置项手动指定额外根目录。
+
 ## 隐私
 
-AgentSession **纯本地、只读**。仅读取本机的 `~/.claude/projects`，不联网、不上传任何内容。
+AgentSession **纯本地、只读**。仅读取本机的 `~/.claude/projects` 与 `~/.codex/sessions`，不联网、不上传任何内容。
 
 ## 安装
 

@@ -38,6 +38,7 @@ struct SubagentRef {
 // 首屏列表 / 概览只需要摘要字段；完整 turns 与 subagent 内容点击详情时再解析。
 struct SessionSummary {
     var id: String
+    var source: String = "claude"
     var project: String
     var projectLabel: String
     var rawProject: String
@@ -66,6 +67,7 @@ struct SessionSummary {
         }()
         return [
             "id": id,
+            "source": source,
             "project": project,
             "project_label": projectLabel,
             "raw_project": rawProject,
@@ -93,6 +95,7 @@ struct SessionSummary {
 // 完整 JSON 通过 toDict() 产出。
 struct Session {
     var id: String
+    var source: String = "claude"
     var project: String          // 归并后的目录名（-Users-…）
     var projectLabel: String
     var rawProject: String
@@ -120,6 +123,7 @@ struct Session {
         }()
         return [
             "id": id,
+            "source": source,
             "project": project,
             "project_label": projectLabel,
             "raw_project": rawProject,
