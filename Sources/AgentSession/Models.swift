@@ -9,6 +9,8 @@ struct Usage {
     var cacheCreate = 0
     var cacheRead = 0
     var output = 0
+    // 单次请求输入上下文（input + cache_create + cache_read）的会话内峰值
+    var contextSize = 0
 
     var inputTotal: Int { inputUncached + cacheCreate + cacheRead }
     var total: Int { inputTotal + output }
@@ -25,6 +27,7 @@ struct Usage {
             "input_total": inputTotal,
             "total": total,
             "cache_pct": cachePct,
+            "context_size": contextSize,
         ]
     }
 }

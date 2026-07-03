@@ -1438,6 +1438,7 @@
       + infoRow('输入 · 写入缓存', fmtTok(u.cache_create), 'sub')
       + infoRow('输入 · 读取缓存', fmtTok(u.cache_read), 'sub')
       + infoRow('输出', fmtTok(u.output), 'sub')
+      + (u.context_size ? infoRow('峰值上下文', fmtTok(u.context_size)) : '')
       + `</div>`;
     h += `<div class="sinfo-sec"><div class="sinfo-h">缓存覆盖率</div>`
       + `<div class="cbar"><span style="width:${u.cache_pct || 0}%"></span></div>`

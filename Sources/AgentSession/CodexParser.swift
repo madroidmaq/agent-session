@@ -77,6 +77,7 @@ final class CodexParser: TranscriptParsing {
         var p = ParsedSummary()
         guard let content = try? String(contentsOfFile: path, encoding: .utf8) else { return p }
         var usage = Usage()
+        var maxContext = 0
         var hasPreview = false
 
         for line in content.split(separator: "\n", omittingEmptySubsequences: false) {
@@ -103,8 +104,10 @@ final class CodexParser: TranscriptParsing {
                 }
             } else if type == "event_msg", pt == "token_count" {
                 if let u = tokenUsage(payload) { usage = u }
+                if let c = lastRequestContext(payload) { maxContext = max(maxContext, c) }
             }
         }
+        usage.contextSize = maxContext
         p.usage = usage
         return p
     }
@@ -115,6 +118,7 @@ final class CodexParser: TranscriptParsing {
         var p = ParsedFile()
         guard let content = try? String(contentsOfFile: path, encoding: .utf8) else { return p }
         var usage = Usage()
+        var maxContext = 0
 
         for line in content.split(separator: "\n", omittingEmptySubsequences: false) {
             guard let e = parseLine(line) else { continue }
@@ -135,6 +139,7 @@ final class CodexParser: TranscriptParsing {
                     }
                 case "token_count":
                     if let u = tokenUsage(payload) { usage = u }
+                    if let c = lastRequestContext(payload) { maxContext = max(maxContext, c) }
                 default: break  // agent_message / user_message 是 response_item 的重复投影，跳过
                 }
                 continue
@@ -200,6 +205,7 @@ final class CodexParser: TranscriptParsing {
             default: break  // reasoning(加密) 等跳过
             }
         }
+        usage.contextSize = maxContext
         p.usage = usage
         return p
     }
@@ -234,6 +240,15 @@ final class CodexParser: TranscriptParsing {
         u.cacheCreate = 0
         u.output = (t["output_tokens"] as? NSNumber)?.intValue ?? 0
         return u
+    }
+
+    // token_count.info.last_token_usage 是单次请求用量，input_tokens 已含缓存部分，
+    // 即该次请求的完整输入上下文 —— 逐条取 max 得到会话峰值。
+    private func lastRequestContext(_ payload: [String: Any]?) -> Int? {
+        guard let info = payload?["info"] as? [String: Any],
+              let t = info["last_token_usage"] as? [String: Any],
+              let input = (t["input_tokens"] as? NSNumber)?.intValue else { return nil }
+        return input
     }
 }
 

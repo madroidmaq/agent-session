@@ -218,6 +218,7 @@ final class TranscriptParser: TranscriptParsing {
             p.usage.cacheCreate += r.cacheCreate
             p.usage.cacheRead += r.cacheRead
             p.usage.output += r.output
+            p.usage.contextSize = max(p.usage.contextSize, r.inputTotal)
         }
         return p
     }
@@ -352,6 +353,7 @@ final class TranscriptParser: TranscriptParsing {
             p.usage.cacheCreate += r.cacheCreate
             p.usage.cacheRead += r.cacheRead
             p.usage.output += r.output
+            p.usage.contextSize = max(p.usage.contextSize, r.inputTotal)
         }
         return p
     }
