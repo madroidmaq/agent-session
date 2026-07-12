@@ -55,6 +55,37 @@ final class SessionStoreSearchTests: XCTestCase {
         XCTAssertEqual(result["count"] as? Int, 0)
     }
 
+    // 挂上 SearchIndex 后走 FTS 路径，行为应与线性扫描一致。
+    func testSearchViaIndexMatchesLinearBehavior() throws {
+        let root = tempRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        try write(root: root, project: "-Users-x-dev-a", session: "a", text: "let us talk about quantum entanglement here")
+        try write(root: root, project: "-Users-x-dev-b", session: "b", text: "completely unrelated grocery list")
+
+        let dbPath = tempRoot() + ".db"
+        defer { for s in ["", "-wal", "-shm"] { try? FileManager.default.removeItem(atPath: dbPath + s) } }
+        let store = SessionStore(root: root)
+        store.searchIndex = try XCTUnwrap(SearchIndex(dbPath: dbPath))
+        var scope = Scope(); scope.since = .all
+        store.reload(scopeHint: scope)
+        store.searchIndex?.waitForPendingSync()
+
+        let result = try decode(store.searchJSON(query: "Quantum", scope: scope))
+        XCTAssertEqual(result["count"] as? Int, 1)
+        let sessions = try XCTUnwrap(result["sessions"] as? [[String: Any]])
+        XCTAssertEqual(sessions.first?["id"] as? String, "a")
+        let snippet = try XCTUnwrap(sessions.first?["snippet"] as? String)
+        XCTAssertTrue(snippet.lowercased().contains("quantum"))
+
+        // 会话文件删除后，索引同步应把它移出结果
+        try FileManager.default.removeItem(atPath: (root as NSString)
+            .appendingPathComponent("-Users-x-dev-a/a.jsonl"))
+        store.reload(scopeHint: scope)
+        store.searchIndex?.waitForPendingSync()
+        let after = try decode(store.searchJSON(query: "Quantum", scope: scope))
+        XCTAssertEqual(after["count"] as? Int, 0)
+    }
+
     func testRespectsProjectScope() throws {
         let root = tempRoot()
         defer { try? FileManager.default.removeItem(atPath: root) }

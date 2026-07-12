@@ -25,6 +25,10 @@ final class SessionStore {
     private var summaryCache: [String: CachedSummary] = [:]
     private var cachedSince: Scope.Since?
 
+    // 持久全文索引（SQLite+FTS5）。nil 时搜索回退为逐文件线性扫描。
+    // 由 AppDelegate / bench 在首次 reload 前注入。
+    var searchIndex: SearchIndex?
+
     init(root: String) {
         self.root = root
         self.sources = [(kind: "claude", root: root)]
@@ -39,8 +43,12 @@ final class SessionStore {
         self.sources = s
     }
 
-    private func makeParser(kind: String, root: String) -> TranscriptParsing {
+    private static func makeParser(kind: String, root: String) -> TranscriptParsing {
         kind == "codex" ? CodexParser(root: root) : TranscriptParser(root: root)
+    }
+
+    private func makeParser(kind: String, root: String) -> TranscriptParsing {
+        Self.makeParser(kind: kind, root: root)
     }
 
     // 扫描全部数据源，返回 (文件路径, 分类信息, 该源解析器)。解析器实例按源复用（同一次扫描内）。
@@ -83,11 +91,20 @@ final class SessionStore {
         var projectCounts: [String: Int] = [:]
         var next: [SessionSummary] = []
         var nextCache: [String: CachedSummary] = [:]
+        var indexEntries: [SearchIndex.Entry] = []
         for (path, info, parser) in files where info.kind == .main {
             let label = prettyProject(info.project)
             let attrs = try? fm.attributesOfItem(atPath: path)
             let modified = attrs?[.modificationDate] as? Date
             let size = (attrs?[.size] as? NSNumber)?.intValue ?? -1
+            // 全文索引覆盖全部 main 文件（不受 since 过滤），文本按需惰性提取。
+            if searchIndex != nil, let modified {
+                let kind = info.source
+                let srcRoot = parser.root
+                indexEntries.append(SearchIndex.Entry(path: path, mtime: modified, size: size) {
+                    searchableText(Self.makeParser(kind: kind, root: srcRoot).parseFile(path))
+                })
+            }
             // 时间预过滤：被跳过的文件不解析、不进缓存、不喂去重链（保持原行为）。
             if let since = sinceDate, let modified, modified < since { continue }
 
@@ -141,6 +158,8 @@ final class SessionStore {
         detailCache.removeAll()
         generation += 1
         lock.unlock()
+
+        searchIndex?.scheduleSync(indexEntries)
     }
 
     // 完整扫描 + 解析（耗时）：用于 --dump-json / golden 对照。
@@ -220,8 +239,8 @@ final class SessionStore {
                        matched: matchedAggregate(matched))
     }
 
-    // 全局正文搜索：在当前 scope 的会话里逐个读 main transcript 原文做大小写不敏感匹配，
-    // 命中则返回该会话摘要 + 一段上下文片段。只在用户主动搜索时触发，不建索引。
+    // 全局正文搜索：在当前 scope 的会话里搜「可搜索文本」（解析后与展示内容对齐），
+    // 命中则返回该会话摘要 + 一段上下文片段。优先走 FTS 索引，不可用时回退逐文件解析。
     func searchJSON(query: String, scope: Scope) -> String {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         lock.lock()
@@ -233,28 +252,28 @@ final class SessionStore {
         }
 
         let sinceDate = scope.since.date
+        // 优先走 FTS 索引（path -> snippet）；索引不可用时回退逐文件解析可搜索文本。
+        // 两条路径同语义：都搜解析后的展示文本，结果一致。
+        let indexHits = searchIndex?.search(trimmed)
         var matched: [[String: Any]] = []
         for s in source {
             if let p = scope.projectLabel, s.projectLabel != p { continue }
             if let since = sinceDate, let last = s.lastTs, last < since { continue }
-            guard let content = try? String(contentsOfFile: s.mainPath, encoding: .utf8),
-                  let range = content.range(of: trimmed, options: [.caseInsensitive]) else { continue }
-            var dict = s.toDict()
-            dict["snippet"] = searchSnippet(content, around: range)
+            var dict: [String: Any]
+            if let hits = indexHits {
+                guard let snippet = hits[s.mainPath] else { continue }
+                dict = s.toDict()
+                dict["snippet"] = snippet
+            } else {
+                let root = sources.first(where: { $0.kind == s.source })?.root ?? ""
+                let content = searchableText(Self.makeParser(kind: s.source, root: root).parseFile(s.mainPath))
+                guard content.range(of: trimmed, options: [.caseInsensitive]) != nil else { continue }
+                dict = s.toDict()
+                dict["snippet"] = SearchIndex.snippet(content, query: trimmed)
+            }
             matched.append(dict)
         }
         return jsonString(["query": trimmed, "count": matched.count, "sessions": matched] as [String: Any])
-    }
-
-    // 从原文 match 位置取 ±80 字符并把 JSONL 噪声压平成一行可读片段。
-    private func searchSnippet(_ content: String, around range: Range<String.Index>) -> String {
-        let pad = 80
-        let start = content.index(range.lowerBound, offsetBy: -pad, limitedBy: content.startIndex) ?? content.startIndex
-        let end = content.index(range.upperBound, offsetBy: pad, limitedBy: content.endIndex) ?? content.endIndex
-        var s = String(content[start..<end])
-        s = s.replacingOccurrences(of: "\\n", with: " ").replacingOccurrences(of: "\\t", with: " ")
-        s = s.replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
-        return s.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     // 概览统计：对「命中池全量」（未受 maxSessions 截断）求聚合，前端概览直接用，

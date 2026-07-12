@@ -55,6 +55,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate,
         let codex = ("~/.codex/sessions" as NSString).expandingTildeInPath
         codexRoot = FileManager.default.fileExists(atPath: codex) ? codex : nil
         store = SessionStore(claudeRoot: root, codexRoot: codexRoot)
+        if let appSupport = FileManager.default.urls(for: .applicationSupportDirectory,
+                                                     in: .userDomainMask).first {
+            let dbPath = appSupport.appendingPathComponent("AgentSession/search-index.db").path
+            store.searchIndex = SearchIndex(dbPath: dbPath)
+        }
         super.init()
     }
 
