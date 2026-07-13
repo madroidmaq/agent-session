@@ -17,6 +17,26 @@ if CommandLine.arguments.contains("--dump-json") {
     exit(0)
 }
 
+// Headless 模式：--load-single <path.jsonl> 解析单个 jsonl（本地/他人发来）并打印其 index+detail JSON，
+// 用于验证「打开文件」特性、对照 schema，不启动 GUI。
+if let idx = CommandLine.arguments.firstIndex(of: "--load-single") {
+    let path = CommandLine.arguments.indices.contains(idx + 1) ? CommandLine.arguments[idx + 1] : ""
+    let store = SessionStore(claudeRoot: "/tmp", codexRoot: nil)
+    if !store.loadSingleFile(path: path) {
+        FileHandle.standardError.write("无法解析：\(path)\n".data(using: .utf8)!)
+        exit(1)
+    }
+    var scope = Scope()
+    scope.since = .all
+    scope.maxSessions = Int.max
+    print(store.indexJSON(scope: scope))
+    if let id = store.summaries.first?.id, let detail = store.detailJSON(id: id) {
+        print("\n--- detail ---")
+        print(detail)
+    }
+    exit(0)
+}
+
 // Headless 性能回归基准：--bench [查询词…] 测冷/热 reload、linear vs FTS 搜索耗时与索引体积。
 // 长期保留，用于监控解析/索引改动的性能影响。
 // 注意：逻辑必须放在函数里，不能写成 main.swift 顶层语句 ——
@@ -89,4 +109,13 @@ app.setActivationPolicy(.regular)
 let delegate = AppDelegate()
 app.delegate = delegate
 app.mainMenu = buildMainMenu(target: delegate)
+
+// 支持命令行直接打开文件：`swift run AgentSession path/to/foo.jsonl` / `AgentSession.app/Contents/MacOS/AgentSession foo.jsonl`
+// Finder「打开方式」走 Apple 事件不走 argv，这里是给开发测试和终端启动的便利入口。
+if let arg = CommandLine.arguments.dropFirst().first(where: {
+    $0.lowercased().hasSuffix(".jsonl") && FileManager.default.fileExists(atPath: $0)
+}) {
+    AppDelegate.pendingArgFile = URL(fileURLWithPath: arg)
+}
+
 app.run()

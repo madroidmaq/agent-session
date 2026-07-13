@@ -923,9 +923,35 @@
     if (right.startsWith('tool:')) showTool(right.slice('tool:'.length), { updateHash: false });
   }
 
+  // 单文件模式：左栏只渲染这一条会话卡片（无项目分组、无时间/项目筛选、无搜索框）。
+  // 打开即自动选中，中间对话流 + 右侧详情与正常模式完全一致。
+  function renderSingleFileSidebar() {
+    const s = DATA.sessions[0];
+    if (!s) {
+      leftEl.innerHTML = '<div class="side-head"><div class="cmd"><span class="prompt">&gt;</span> session-viewer</div></div>'
+        + '<div class="empty">没有可显示的会话。</div>';
+      return;
+    }
+    const toks = s.usage && s.usage.total ? ` · ${fmtTok(s.usage.total)}` : '';
+    const h = `<div class="side-head"><div class="cmd"><span class="prompt">&gt;</span> session-viewer</div>`
+      + `<span class="side-count">单文件</span></div>`
+      + `<div class="side-list"><button class="srow" data-id="${esc(s.id)}">`
+      + `<div class="srow-title">${srcBadge(s.source)}${esc(s.preview)}</div>`
+      + `<div class="srow-meta">${s.num_user_msgs} 轮 · ${s.num_tool_calls} 工具`
+      + (s.num_subagents ? ` · ${s.num_subagents} sub` : '')
+      + ` · ${niceDate(s.last_ts)}${toks}</div></button></div>`;
+    leftEl.innerHTML = h;
+    const row = leftEl.querySelector('.srow');
+    if (row) row.onclick = () => { location.hash = '#s/' + s.id; };
+    // 打开即自动选中这一条。
+    if (!location.hash) location.hash = '#s/' + s.id;
+    else highlightSidebar(s.id);
+  }
+
   // ——— left pane: project-grouped session list (persistent) ———
   function renderSidebar() {
     searchActive = false;   // 渲染普通列表即退出搜索态
+    if (DATA.single_file) { renderSingleFileSidebar(); return; }
     const sc = DATA.scope || {};
     const ctl = DATA.controls;
     let filters = '';

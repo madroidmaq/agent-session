@@ -12,8 +12,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate,
     private var codexWatcher: FileWatcher?
 
     private var scope = Scope()
+    private var singleFileMode = false
+    private var singleFileURL: URL?
     private var webReady = false
+    private var appReady = false
+    private var pendingOpenURL: URL?
     private var pendingInject = false
+    private var templateLoadInFlight = false
+    private var pendingAfterLoad: (() -> Void)?
     private let loadQueue = DispatchQueue(label: "dev.madroid.agentsession.load", qos: .userInitiated)
     private var reloadSeq = 0
     private var activeReloadSeq = 0
@@ -100,16 +106,61 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate,
         webView.navigationDelegate = self
         webView.autoresizingMask = [.width, .height]
         if #available(macOS 12.0, *) { webView.underPageBackgroundColor = window.backgroundColor }
-        window.contentView = webView
+
+        // 用一个拖拽接收视图包住 WebView：把 jsonl 文件拖到窗口上即可单文件打开。
+        let drop = FileDropView()
+        drop.autoresizingMask = [.width, .height]
+        drop.frame = window.contentView?.bounds ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+        drop.onDrop = { [weak self] url in self?.enterSingleFileMode(url) }
+        webView.frame = drop.bounds
+        drop.addSubview(webView)
+        window.contentView = drop
 
         setupToolbar()
         loadTemplate()
 
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+        appReady = true
 
-        reloadInBackground()
-        startWatching()
+        // 启动方式：若由「打开方式」/ argv 传入 jsonl，进入单文件模式；否则正常扫描目录。
+        // application(_:open:) 可能在本方法之前就被调用（打包 app 的文档重开流程），
+        // 那时 webView 还没建好——故先暂存到 pendingOpenURL，在这里（窗口/webview 就绪后）统一处理。
+        if let url = pendingOpenURL {
+            pendingOpenURL = nil
+            enterSingleFileMode(url)
+        } else if let url = AppDelegate.pendingArgFile {
+            AppDelegate.pendingArgFile = nil
+            enterSingleFileMode(url)
+        } else if !launchedByOpeningFile {
+            reloadInBackground()
+            startWatching()
+        }
+        // launchedByOpeningFile 但 URL 还没到：等 application(_:open:) 回调（appReady 已 true）。
+    }
+
+    // 是否由 Finder「打开方式」启动：当前 Apple 事件为 odoc（open documents）。
+    private var launchedByOpeningFile: Bool {
+        guard let ev = NSAppleEventManager.shared().currentAppleEvent,
+              ev.eventClass == fourCC("aevt"), ev.eventID == fourCC("odoc"),
+              ev.paramDescriptor(forKeyword: fourCC("----")) != nil else { return false }
+        return true
+    }
+
+    // 接收「打开方式 → AgentSession」（运行中再次打开文件 / 文件关联启动）的 URL。
+    // appReady 之前窗口/webview 尚未就绪，暂存待 didFinishLaunching 末尾处理。
+    func application(_ application: NSApplication, open urls: [URL]) {
+        guard let url = urls.first(where: { $0.pathExtension.lowercased() == "jsonl" }) else { return }
+        if appReady { enterSingleFileMode(url) } else { pendingOpenURL = url }
+    }
+
+    // swift run AgentSession <file.jsonl> 时由 main.swift 注入的待打开文件。
+    static var pendingArgFile: URL?
+
+    private func fourCC(_ s: String) -> UInt32 {
+        var v: UInt32 = 0
+        for b in s.utf8 { v = (v << 8) | UInt32(b) }
+        return v
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
@@ -122,12 +173,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate,
             webView.loadHTMLString("<h2 style='font-family:sans-serif;padding:40px'>找不到 template.html 资源</h2>", baseURL: nil)
             return
         }
+        templateLoadInFlight = true
         webView.loadFileURL(url, allowingReadAccessTo: url.deletingLastPathComponent())
+    }
+
+    // 确保当前 WebView 显示的是 template（而非上一个错误页），就绪后执行 action。
+    // 错误页用 loadHTMLString 替换过模板，webReady=false，需重新载入模板再继续。
+    private func ensureTemplateLoaded(then action: @escaping () -> Void) {
+        if webReady { action(); return }
+        pendingAfterLoad = action
+        if !templateLoadInFlight { loadTemplate() }
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         webReady = true
+        templateLoadInFlight = false
         injectPaneLayout()
+        if let action = pendingAfterLoad { pendingAfterLoad = nil; action(); return }
         if pendingInject { pendingInject = false; inject() }
     }
 
@@ -347,6 +409,83 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate,
         }
     }
 
+    // MARK: - 单文件模式（打开本地 / 别人发来的 jsonl）
+
+    private func stopWatchers() {
+        watcher?.stop(); watcher = nil
+        codexWatcher?.stop(); codexWatcher = nil
+    }
+
+    // 三种入口（文件关联 / 菜单打开 / 拖拽）都汇到这里：解析单个 jsonl，替换目录扫描。
+    func enterSingleFileMode(_ url: URL) {
+        guard url.pathExtension.lowercased() == "jsonl",
+              FileManager.default.fileExists(atPath: url.path) else { return }
+        singleFileURL = url
+        ensureTemplateLoaded { self.performSingleFileLoad(url) }
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    private func performSingleFileLoad(_ url: URL) {
+        stopWatchers()
+        scope.since = .all
+        scope.projectLabel = nil
+        scope.maxSessions = Scope.defaultMaxSessions
+        if store.loadSingleFile(path: url.path) {
+            singleFileMode = true
+            window.title = "AgentSession — \(url.lastPathComponent)"
+            inject()
+        } else {
+            singleFileMode = false
+            window.title = "AgentSession"
+            loadErrorHTML(title: "无法解析该文件",
+                          message: "「\(url.lastPathComponent)」不是有效的 Claude / Codex 会话记录。")
+        }
+    }
+
+    @objc func openFile() {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.title = "打开 JSONL 聊天记录"
+        if let t = UTType(tag: "jsonl", tagClass: .filenameExtension, conformingTo: .json) {
+            panel.allowedContentTypes = [t]
+        }
+        panel.beginSheetModal(for: window) { [weak self] resp in
+            guard resp == .OK, let picked = panel.url else { return }
+            self?.enterSingleFileMode(picked)
+        }
+    }
+
+    // 退出单文件模式：恢复正常目录扫描 + 监听。
+    @objc func backToDirectory() {
+        guard singleFileMode else { return }
+        singleFileMode = false
+        singleFileURL = nil
+        window.title = "AgentSession"
+        store.exitSingleFileMode()
+        scope = Scope()
+        loaded = false
+        loadedSinceDate = nil
+        ensureTemplateLoaded {
+            self.reloadInBackground()
+            self.startWatching()
+        }
+    }
+
+    // 错误页用 HTML 字符串替换模板；置 webReady=false，下次操作经 ensureTemplateLoaded 重新载入模板。
+    private func loadErrorHTML(title: String, message: String) {
+        webReady = false
+        let html = """
+        <div style="font-family:-apple-system,sans-serif;color:#e6e6e6;background:#1a1918;\
+        padding:48px;height:100vh;box-sizing:border-box">
+        <h2 style="margin:0 0 10px;font-weight:600">\(title)</h2>\
+        <p style="color:#9a958e;line-height:1.5;max-width:480px;margin:0">\(message)</p></div>
+        """
+        webView.loadHTMLString(html, baseURL: nil)
+    }
+
     // MARK: - 工具栏
 
     private func setupToolbar() {
@@ -382,7 +521,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate,
 
     // MARK: - Actions
 
-    @objc func refresh() { reloadInBackground() }
+    @objc func refresh() {
+        if singleFileMode, let url = singleFileURL {
+            ensureTemplateLoaded { self.performSingleFileLoad(url) }
+        } else {
+            reloadInBackground()
+        }
+    }
 
     @objc func showAbout() {
         let info = Bundle.main.infoDictionary ?? [:]
@@ -479,6 +624,19 @@ func buildMainMenu(target: AppDelegate) -> NSMenu {
                     action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
     appItem.submenu = appMenu
 
+    let fileItem = NSMenuItem()
+    main.addItem(fileItem)
+    let fileMenu = NSMenu(title: "文件")
+    let openFileItem = NSMenuItem(title: "打开文件…",
+                                  action: #selector(AppDelegate.openFile), keyEquivalent: "o")
+    openFileItem.target = target
+    let backItem = NSMenuItem(title: "返回会话目录",
+                              action: #selector(AppDelegate.backToDirectory), keyEquivalent: "O")
+    backItem.target = target
+    fileMenu.addItem(openFileItem)
+    fileMenu.addItem(backItem)
+    fileItem.submenu = fileMenu
+
     let editItem = NSMenuItem()
     main.addItem(editItem)
     let editMenu = NSMenu(title: "编辑")
@@ -489,4 +647,33 @@ func buildMainMenu(target: AppDelegate) -> NSMenu {
     editItem.submenu = editMenu
 
     return main
+}
+
+// 窗口级拖拽接收：把 .jsonl 文件拖到窗口上即进入单文件模式。
+final class FileDropView: NSView {
+    var onDrop: ((URL) -> Void)?
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        registerForDraggedTypes([.fileURL])
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        validJsonl(in: sender) ? .copy : []
+    }
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        validJsonl(in: sender) ? .copy : []
+    }
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        guard let url = firstJsonl(in: sender) else { return false }
+        onDrop?(url)
+        return true
+    }
+
+    private func validJsonl(in sender: NSDraggingInfo) -> Bool { firstJsonl(in: sender) != nil }
+    private func firstJsonl(in sender: NSDraggingInfo) -> URL? {
+        guard let urls = sender.draggingPasteboard.readObjects(forClasses: [NSURL.self]) as? [URL] else { return nil }
+        return urls.first { $0.pathExtension.lowercased() == "jsonl" }
+    }
 }

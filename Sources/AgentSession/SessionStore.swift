@@ -29,6 +29,11 @@ final class SessionStore {
     // 由 AppDelegate / bench 在首次 reload 前注入。
     var searchIndex: SearchIndex?
 
+    // 单文件模式：用「打开文件」入口加载一个独立 jsonl（本地或别人发来的），
+    // 不扫描任何根目录。true 时 indexJSON 输出单条会话、隐藏左侧筛选控件。
+    private(set) var isSingleFile = false
+    private(set) var singleFilePath: String?
+
     init(root: String) {
         self.root = root
         self.sources = [(kind: "claude", root: root)]
@@ -49,6 +54,82 @@ final class SessionStore {
 
     private func makeParser(kind: String, root: String) -> TranscriptParsing {
         Self.makeParser(kind: kind, root: root)
+    }
+
+    // 单文件加载：解析一个独立 jsonl（本地或别人发来的）成单条会话，跳过目录扫描。
+    // 自动嗅探 Claude / Codex 格式。成功返回 true。
+    func loadSingleFile(path: String) -> Bool {
+        let kind = detectKind(path: path)
+        let parent = (path as NSString).deletingLastPathComponent
+
+        // 摘要与详情分别用独立 parser：共用一个会让摘要解析先把全部 uuid 塞进 seenUuids，
+        // 导致详情 parseFile 把每行当重复跳过、turns 全空。
+        let parsed = makeParser(kind: kind, root: parent).parseSummaryFile(path)
+        guard parsed.numUser + parsed.numAssistant + parsed.numTools > 0 || parsed.firstTs != nil else { return false }
+
+        let base = (path as NSString).lastPathComponent.replacingOccurrences(of: ".jsonl", with: "")
+        // 项目归属：优先用文件内 cwd 编码；没有则回退到父目录名 / "单文件"。
+        let proj: String
+        if let cwd = parsed.cwd, !cwd.isEmpty {
+            proj = cwdToProjectDir(cwd)
+        } else {
+            proj = kind == "codex" ? "codex" : (parent.isEmpty ? "单文件" : (parent as NSString).lastPathComponent)
+        }
+        let info = FileInfo(project: proj, rawProject: proj, worktreeName: nil,
+                            sessionId: base, kind: .main, source: kind)
+        guard let session = buildSession(path: path, info: info, subagents: [],
+                                         parser: makeParser(kind: kind, root: parent),
+                                         summariesByProject: [:]) else { return false }
+        let summary = SessionSummary(
+            id: base, source: kind, project: proj, projectLabel: prettyProject(proj),
+            rawProject: proj, rawProjectLabel: prettyProject(proj),
+            isWorktree: false, worktreeName: nil, mainPath: path, subagents: [],
+            cwd: parsed.cwd, gitBranch: parsed.gitBranch,
+            firstTs: parsed.firstTs, lastTs: parsed.lastTs,
+            numUser: parsed.numUser, numAssistant: parsed.numAssistant, numTools: parsed.numTools,
+            usage: parsed.usage, skills: parsed.skills, preview: parsed.preview)
+
+        lock.lock()
+        summaries = [summary]
+        detailCache[summary.id] = session
+        allProjectCounts = [:]
+        sessionIndexSummaries = [:]
+        summaryCache.removeAll()
+        cachedSince = nil
+        isSingleFile = true
+        singleFilePath = path
+        generation += 1
+        lock.unlock()
+        return true
+    }
+
+    // 退出单文件模式，恢复成目录扫描态：清掉单文件数据，后续 reload 重新填。
+    func exitSingleFileMode() {
+        lock.lock()
+        isSingleFile = false
+        singleFilePath = nil
+        summaries = []
+        detailCache.removeAll()
+        generation += 1
+        lock.unlock()
+    }
+
+    // 嗅探 JSONL 首批行判断来源：Codex 行带 payload / type ∈ {session_meta,response_item,event_msg}；
+    // Claude 行带 message / type ∈ {user,assistant,summary,mode,system}。
+    private func detectKind(path: String) -> String {
+        guard let content = try? String(contentsOfFile: path, encoding: .utf8) else { return "claude" }
+        for line in content.split(separator: "\n", omittingEmptySubsequences: false).prefix(30) {
+            guard let data = line.data(using: .utf8),
+                  let e = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
+            let type = (e["type"] as? String) ?? ""
+            if e["payload"] != nil || type == "session_meta" || type == "response_item" || type == "event_msg" {
+                return "codex"
+            }
+            if e["message"] != nil || ["user", "assistant", "summary", "mode", "system"].contains(type) {
+                return "claude"
+            }
+        }
+        return "claude"
     }
 
     // 扫描全部数据源，返回 (文件路径, 分类信息, 该源解析器)。解析器实例按源复用（同一次扫描内）。
@@ -236,7 +317,7 @@ final class SessionStore {
         let capped = Array(matched.prefix(scope.maxSessions))
         return topJSON(scope: scope, totalMatched: matched.count, shown: capped.count,
                        controlsProjects: projects, sessions: capped.map { $0.toDict() },
-                       matched: matchedAggregate(matched))
+                       matched: matchedAggregate(matched), singleFile: isSingleFile)
     }
 
     // 全局正文搜索：在当前 scope 的会话里搜「可搜索文本」（解析后与展示内容对齐），
@@ -587,7 +668,7 @@ final class SessionStore {
 
     private func topJSON(scope: Scope, totalMatched: Int, shown: Int,
                          controlsProjects: [String], sessions: [[String: Any]],
-                         matched: [String: Any]? = nil) -> String {
+                         matched: [String: Any]? = nil, singleFile: Bool = false) -> String {
         let sinceDate = scope.since.date
         var scopeDict: [String: Any] = [
             "project": scope.projectLabel ?? NSNull(),
@@ -598,18 +679,28 @@ final class SessionStore {
             "shown": shown,
         ]
         if let matched = matched { scopeDict["matched"] = matched }
-        let controls: [String: Any] = [
-            "since": scope.since.rawValue,
-            "project": scope.projectLabel ?? NSNull(),
-            "projects": controlsProjects,
-        ]
-        let top: [String: Any] = [
+        // 单文件模式：没有项目/时间筛选，controls 置 null，root 指向文件本身，前端据此渲染简化左栏。
+        let controls: Any
+        if singleFile {
+            controls = NSNull()
+        } else {
+            controls = [
+                "since": scope.since.rawValue,
+                "project": scope.projectLabel ?? NSNull(),
+                "projects": controlsProjects,
+            ] as [String: Any]
+        }
+        var top: [String: Any] = [
             "generated_at": isoString(Date()),
             "root": root,
             "scope": scopeDict,
             "controls": controls,
             "sessions": sessions,
         ]
+        if singleFile {
+            top["single_file"] = true
+            top["root"] = singleFilePath ?? root
+        }
         return jsonString(top)
     }
 
