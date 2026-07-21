@@ -303,10 +303,18 @@
     .toc-tick, .toc-panel, .toc-rail-inner { transition: none; }
   }
 
-  /* ——— exchanges: one human turn + the agent's work beneath it ——— */
-  .exchange { margin: 24px 0; }
-  .agent-track { margin: 6px 0 0 6px; padding-left: 20px;
-                 border-left: 2px solid rgba(142,154,200,0.42); }
+  /* ——— exchanges: one human turn + the agent's work beneath it ———
+     Three steps of vertical rhythm, and only three: a turn (28) reads as a new
+     scene, a block of prose or a spawned agent (13) as a beat inside it, and a run
+     of tool rows (2) as one continuous object. Air goes where there is a seam;
+     everything else stays tight. */
+  .exchange { margin: 28px 0; }
+  /* No drawn rail: a line here would be a second encoding of what the spacing
+     scale already says, and the toc-rail's scroll spy already answers "which turn
+     am I in" once the prompt scrolls away. A small indent is enough to keep the
+     agent's work subordinate to the prompt, and it hands ~26px back to the paths
+     and commands, which are what actually get truncated in this column. */
+  .agent-track { margin: 8px 0 0; padding-left: 10px; }
 
   .who { font: 500 10px/1 var(--mono); letter-spacing: 0.1em; text-transform: uppercase;
          margin-bottom: 6px; display: flex; justify-content: space-between; align-items: baseline; }
@@ -339,8 +347,10 @@
   .skill-doc .skill-body.text h2 { font-size: 14.5px; }
 
   /* assistant prose — cream serif on the terminal */
-  .msg-asst { padding: 4px 0 6px; }
-  .msg-asst .who { color: var(--gold); }
+  .msg-asst { margin: 13px 0 5px; }
+  .agent-track > .msg-asst:first-child { margin-top: 2px; }
+  /* only a timestamp is left in here, so it sits at the end of the line */
+  .msg-asst .who { justify-content: flex-end; margin-bottom: 2px; }
   .msg-asst .text { font-family: var(--serif); font-size: 15px; line-height: 1.72;
                     color: var(--cream); word-break: break-word; }
 
@@ -396,23 +406,82 @@
   mark.hit { background: rgba(255,193,7,0.28); color: inherit; border-radius: 2px; }
   mark.hit.cur { background: var(--clay); color: #1a1918; }
 
-  /* ——— middle-column tool anchors (one-liners that point at the right pane) ——— */
-  .tool-anchor { display: flex; gap: 9px; align-items: baseline; width: 100%; text-align: left;
-                 background: none; border: none; border-left: 2px solid var(--slate-faint);
-                 padding: 4px 0 4px 11px; margin: 3px 0; cursor: pointer; color: var(--dim);
-                 font: 12px var(--mono); }
+  /* ——— middle-column tool anchors (one-liners that point at the right pane) ———
+     Two columns, not four: the verb (tool name) and the object (path / command).
+     No icons — the name already says what it is, and the arg column stays on one
+     vertical line so a run of calls can be scanned as a list instead of read.
+     The rail is hover-only; .agent-track already draws the permanent one. */
+  .ta-row { display: flex; gap: 10px; align-items: baseline; width: 100%; text-align: left;
+            padding: 3px 0 3px 10px; border-left: 2px solid transparent;
+            font: 12px var(--mono); color: var(--dim); }
+  /* 8ch fits every common tool name and `thinking`, so the object column lands on
+     one vertical line; the rare longer name pushes its own arg and nothing else. */
+  .ta-name { color: var(--slate); font-weight: 500; flex-shrink: 0; min-width: 8ch; }
+  .ta-arg { color: var(--dim); flex: 0 1 auto; min-width: 0; overflow: hidden;
+            text-overflow: ellipsis; white-space: nowrap; }
+  /* margin-right:auto keeps the count beside its row instead of at the far edge */
+  .ta-count { color: var(--slate-dim); flex-shrink: 0; font-size: 11px; margin-right: auto; }
+  /* an Edit's line delta, in the same red/green as the card's diff panes */
+  .ta-del { color: #e0a0a8; }
+  .ta-add { color: #a6d8b4; }
+  /* a Read's line count — a footnote to the path, not competing with it */
+  .ta-stat { color: var(--subtle); }
+
+  .tool-anchor { background: none; border: none; margin: 1px 0; cursor: pointer; }
   .tool-anchor:hover { color: var(--clay); border-left-color: var(--clay); background: var(--hover); }
   .tool-anchor:focus-visible { outline: 2px solid var(--clay); outline-offset: -2px; }
-  .tool-anchor .ta-ic { color: var(--slate-dim); flex-shrink: 0; }
-  .tool-anchor .ta-name { color: var(--slate); font-weight: 500; flex-shrink: 0; }
   .tool-anchor:hover .ta-name { color: var(--clay); }
-  .tool-anchor .ta-arg { color: var(--dim); flex: 1; min-width: 0; overflow: hidden;
-                         text-overflow: ellipsis; white-space: nowrap; }
+  .tool-anchor:hover .ta-count { color: var(--clay); }
   .tool-anchor.has-error .ta-name { color: var(--red); }
-  .tool-anchor.agent-jump { border-left-color: rgba(142,154,200,0.5); }
-  .tool-anchor.agent-jump .ta-ic, .tool-anchor.agent-jump .ta-name { color: var(--slate); }
-  .tool-anchor.agent-jump:hover { color: var(--slate); border-left-color: var(--slate); }
-  .tool-anchor.agent-jump:hover .ta-name { color: var(--cream); }
+  /* a collapsed run of identical calls — click expands it back into its rows */
+  .tool-anchor.ta-group .ta-count { color: var(--gold); }
+  /* ——— spawned agent: its own tier between a tool row and the user's bubble ———
+     A tool row is a bare line; the user's turn is a filled clay bubble. An agent
+     sits between: a slate band, boxed but flat, one line, mono. */
+  .agent-band { display: flex; flex-direction: column; gap: 2px; width: 100%; text-align: left;
+                margin: 13px 0; padding: 7px 11px; cursor: pointer;
+                font: 12px var(--mono); color: var(--dim);
+                background: rgba(142,154,200,0.06);
+                border: none; border-left: 3px solid var(--slate);
+                border-radius: 0 5px 5px 0; }
+  .agent-band:hover { background: rgba(142,154,200,0.13); }
+  .agent-band:focus-visible { outline: 2px solid var(--clay); outline-offset: -2px; }
+  .agent-band .ab-head, .agent-band .ab-foot { display: flex; gap: 8px; align-items: baseline;
+                                               min-width: 0; }
+  .agent-band .ab-mark { color: var(--slate); flex-shrink: 0; }
+  .agent-band .ab-name { color: var(--cream); font-weight: 500; flex-shrink: 0; }
+  .agent-band .ab-task { color: var(--dim); min-width: 0;
+                         overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .agent-band .ab-tee { color: var(--slate-faint); flex-shrink: 0; }
+  /* the three numbers that say what the run cost */
+  .agent-band .ab-stats { color: var(--slate-dim); font-size: 11px; }
+  .agent-band .ab-go { color: var(--slate-dim); font-size: 11px; margin-left: auto; flex-shrink: 0; }
+  .agent-band:hover .ab-go { color: var(--clay); }
+
+  /* a batch of agents that ran at once — same band, one header, one row each */
+  .agent-batch { margin: 13px 0; padding: 7px 11px; font: 12px var(--mono);
+                 background: rgba(142,154,200,0.06);
+                 border-left: 3px solid var(--slate); border-radius: 0 5px 5px 0; }
+  .agent-batch .abx-head { display: flex; gap: 8px; align-items: baseline; padding-bottom: 2px; }
+  .agent-batch .abx-title { color: var(--cream); font-weight: 500; flex-shrink: 0; }
+  /* which types are in a mixed batch */
+  .agent-batch .abx-kinds { color: var(--slate-dim); font-size: 11px; min-width: 0;
+                            overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .abx-row { display: flex; gap: 8px; align-items: baseline; width: 100%; text-align: left;
+             background: none; border: none; padding: 2px 4px 2px 0; cursor: pointer;
+             font: 12px var(--mono); color: var(--dim); border-radius: 3px; }
+  .abx-row:hover { background: rgba(142,154,200,0.12); }
+  .abx-row:focus-visible { outline: 2px solid var(--clay); outline-offset: -2px; }
+  .abx-row .abx-tee { color: var(--slate-faint); flex-shrink: 0; }
+  /* only present in a mixed batch, where the header can't name the type */
+  .abx-row .abx-type { color: var(--slate); flex-shrink: 0; }
+  /* the task shrinks first; its numbers stay next to it rather than at the far
+     edge, so the eye doesn't cross the row to connect a name to its cost */
+  .abx-row .abx-task { color: var(--cream); flex: 0 1 auto; min-width: 0;
+                       overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .abx-row .abx-stats { color: var(--slate-dim); font-size: 11px; flex-shrink: 0; }
+  .abx-row .ab-go { color: var(--slate-dim); font-size: 11px; margin-left: auto; flex-shrink: 0; }
+  .abx-row:hover .ab-go { color: var(--clay); }
 
   /* ——— right pane: tool detail cards ——— */
   .rhead { color: var(--slate); font-size: 11px; letter-spacing: 0.05em; text-transform: uppercase;
@@ -443,10 +512,11 @@
           overflow: hidden; margin: 4px 0 8px; }
   .cbar span { display: block; height: 100%; background: var(--clay); }
 
-  details.tcard { margin: 4px 0; border: 1px solid var(--outline); border-radius: 6px;
-                  background: rgba(255,255,255,0.015); }
+  /* No border: the pane frames this and the rhead names it, so a second frame
+     around the only card in the pane is decoration. */
+  details.tcard { margin: 0; }
   details.tcard > summary { list-style: none; cursor: pointer; color: var(--dim);
-                            padding: 8px 10px; display: flex; gap: 8px; align-items: baseline;
+                            padding: 2px 2px 8px; display: flex; gap: 8px; align-items: baseline;
                             font-size: 12px; }
   details.tcard > summary::-webkit-details-marker { display: none; }
   details.tcard > summary::before { content: '▸'; color: var(--slate-faint); flex-shrink: 0; }
@@ -455,28 +525,29 @@
   details.tcard > summary .lbl { font-weight: 500; flex-shrink: 0; color: var(--slate); }
   details.tcard > summary .arg { color: var(--subtle); overflow: hidden;
                                  text-overflow: ellipsis; white-space: nowrap; }
-  details.tcard > :not(summary) { padding: 0 10px; }
-  details.tcard > :last-child { padding-bottom: 10px; }
-  details.tcard.has-error { border-color: rgba(232,103,121,0.4); }
+  details.tcard > :not(summary) { padding: 0; }
   details.tcard.has-error > summary .lbl { color: var(--red); }
   details.tcard.flash { animation: flash 1.1s ease-out; }
-  @keyframes flash { from { background: rgba(217,119,87,0.22); } to { background: rgba(255,255,255,0.015); } }
+  @keyframes flash { from { background: rgba(217,119,87,0.22); } to { background: transparent; } }
 
-  /* thinking — collapsible machine layer, lives in the middle column */
-  details.blk { margin: 5px 0; }
-  details.blk > summary { list-style: none; cursor: pointer; color: var(--dim);
-                          padding: 4px 0; display: flex; gap: 9px; align-items: baseline;
-                          font-size: 12px; }
+  /* thinking — collapsible machine layer, lives in the middle column.
+     Shares the .ta-row grid with the tool anchors so both align to one edge;
+     the summary carries the thought's opening line, so a collapsed run of them
+     still reads as content rather than as repeated placeholders. */
+  details.blk { margin: 1px 0; }
+  details.blk > summary { list-style: none; cursor: pointer; }
   details.blk > summary::-webkit-details-marker { display: none; }
-  details.blk > summary::before { content: '▸'; color: var(--slate-faint); flex-shrink: 0; }
-  details.blk[open] > summary::before { content: '▾'; }
-  details.blk .icon { flex-shrink: 0; color: var(--slate-dim); }
-  details.blk .lbl { font-weight: 500; flex-shrink: 0; }
+  details.blk > summary:hover { color: var(--clay); border-left-color: var(--clay);
+                                background: var(--hover); }
+  details.blk > summary:hover .ta-name { color: var(--clay); }
+  details.blk > summary:focus-visible { outline: 2px solid var(--clay); outline-offset: -2px; }
   details.blk .pane { white-space: pre-wrap; word-break: break-word;
                       font: 12px/1.55 var(--mono); color: var(--term-fg);
                       background: rgba(255,255,255,0.022); border-radius: 5px;
                       padding: 10px 12px; margin: 4px 0 8px; max-height: 460px; overflow: auto; }
-  details.think > summary .lbl { color: var(--slate-dim); }
+  details.think > summary .ta-name { color: var(--slate-dim); font-weight: 400; }
+  details.think > summary .ta-arg { font-style: italic; }
+  details.think[open] > summary .ta-arg { color: var(--subtle); }
   details.think .pane { color: #9aa0b8; font-style: italic; font-family: var(--serif); font-size: 13.5px; }
 
   /* tool input/output panes (inside tcards) */
@@ -491,10 +562,13 @@
           color: var(--term-fg); background: rgba(255,255,255,0.022); border-radius: 5px;
           padding: 10px 12px; margin: 4px 0 8px; max-height: 460px; overflow: auto; }
   .pane.error { border-left: 2px solid var(--red); }
-  pre.md-pre.diff { padding: 8px 10px; }
-  .dl { display: block; }
-  .dl.old { color: #e0a0a8; background: rgba(232,103,121,0.08); }
-  .dl.new { color: #a6d8b4; background: rgba(95,184,120,0.10); }
+  /* One continuous block with a colored edge per line, rather than a full-width
+     fill on each — filled rows separated by leading read as a strip of pills
+     instead of as a diff. */
+  pre.md-pre.diff { padding: 8px 0; }
+  .dl { display: block; padding: 0 10px; border-left: 2px solid transparent; }
+  .dl.old { color: #e0a0a8; border-left-color: rgba(232,103,121,0.6); }
+  .dl.new { color: #a6d8b4; border-left-color: rgba(95,184,120,0.6); }
   .clip-note { color: var(--gold); font-size: 11px; margin-top: 4px; font-family: var(--mono); }
 
   /* copy button on tool input panes */
@@ -628,6 +702,14 @@
     `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}:${String(d.getSeconds()).padStart(2,'0')}`; };
   const dur = ms => { if (!ms) return '0m'; const m = Math.round(ms/60000);
     return m >= 60 ? `${(m/60).toFixed(1)}h` : `${m}m`; };
+  // dur() rounds to whole minutes, which reads as "0m" for most subagents; this one
+  // keeps seconds so a short run still shows what it cost.
+  const durHMS = ms => {
+    const s = Math.round((ms || 0) / 1000);
+    if (s < 60) return `${s}s`;
+    if (s < 3600) return `${Math.floor(s / 60)}m ${s % 60}s`;
+    return `${Math.floor(s / 3600)}h ${Math.round((s % 3600) / 60)}m`;
+  };
   const validTsMs = iso => { if (!iso) return null; const ms = Date.parse(iso); return Number.isFinite(ms) ? ms : null; };
 
   // copy text to clipboard with a graceful fallback (file:// or older browsers)
@@ -649,6 +731,12 @@
   }
   const clipText = c => esc(c && typeof c === 'object' ? c.text : c) +
     (c && c.clipped ? `\n<span class="clip-note">… 已截断，原文 ${c.full_len.toLocaleString()} 字符</span>` : '');
+  // opening line of a block, for the one-line summary of a collapsed row
+  function firstLine(c, max) {
+    const s = String((c && typeof c === 'object' ? c.text : c) || '').replace(/\s+/g, ' ').trim();
+    max = max || 110;
+    return s.length > max ? s.slice(0, max) + '…' : s;
+  }
 
   const clamp = (v, min, max) => Math.round(Math.min(Math.max(Number(v) || 0, min), max));
   function isDesktopPaneMode() { return window.innerWidth >= PANE.desktopMin; }
@@ -1207,6 +1295,44 @@
     return s;
   }
 
+  // An Edit's summary is only its file_path, so a run of edits to one file reads as
+  // the same row repeated. The file is already established by context; what differs
+  // is the change — so an Edit row shows the basename plus its −removed/+added line
+  // counts. The counts match the card's own − / + panes exactly (whole old_string
+  // out, whole new_string in), rather than a second, disagreeing diff algorithm.
+  // Tools that mutate the repo, listed here, never collapse into a ×N run: two
+  // edits are two different changes even when they touch the same file.
+  const WRITE_TOOLS = new Set(['Edit', 'MultiEdit', 'Write', 'NotebookEdit']);
+  const lineCount = s => { s = String(s || ''); return s ? s.split('\n').length : 0; };
+  function editArgHTML(t) {
+    const input = t.input || {};
+    const edits = Array.isArray(input.edits) ? input.edits : [input];
+    let del = 0, add = 0;
+    for (const e of edits) { del += lineCount(e.old_string); add += lineCount(e.new_string); }
+    const file = String(t.summary || '').split('/').pop() || t.summary || '';
+    return esc(file)
+      + (del ? ` <span class="ta-del">−${del}</span>` : '')
+      + (add ? ` <span class="ta-add">+${add}</span>` : '');
+  }
+
+  // How many lines a Read returned. The stored result is clipped at MAX_RESULT_CHARS,
+  // so counting its newlines would undercount a long read. Read output is
+  // `<lineno>\t<text>`, so the first and last numbers give the span even when the
+  // text was truncated — and when it was, the number is a floor, marked with ≥.
+  // Output without line numbers (images, other agents' formats) falls back to
+  // counting newlines. Returns '' when there's nothing trustworthy to show.
+  function readStat(res) {
+    if (!res || res.is_error || !res.content) return '';
+    const c = res.content;
+    const s = (typeof c === 'object' ? c.text : c) || '';
+    if (!s) return '';
+    const clipped = !!(typeof c === 'object' && c.clipped);
+    const nums = [...s.matchAll(/(?:^|\n)\s*(\d+)\t/g)].map(m => +m[1]);
+    const n = nums.length >= 2 ? nums[nums.length - 1] - nums[0] + 1 : s.split('\n').length;
+    if (n < 1) return '';
+    return `${clipped ? '≥' : ''}${n} 行`;
+  }
+
   function toolCard(t, res, tid) {
     const ic = TOOL_ICON[t.name] || '⚙';
     const errCls = res && res.is_error ? ' has-error' : '';
@@ -1218,6 +1344,84 @@
       + `</details>`;
   }
 
+  // One anchor row: verb + object, optionally a ×N count when a run was collapsed.
+  // `o.attr` overrides the row's own click target (a collapsed run has none of its
+  // own — it carries data-group instead and expands in place).
+  function anchorHTML(r, o) {
+    o = o || {};
+    const attr = o.attr !== undefined ? o.attr : r.attr;
+    return `<button class="tool-anchor ta-row${r.cls || ''}${o.cls || ''}"${attr}>`
+      + `<span class="ta-name">${esc(r.name)}</span>`
+      + `<span class="ta-arg"${r.title ? ` title="${esc(r.title)}"` : ''}>${r.argHTML || esc(r.arg)}</span>`
+      + (o.count ? `<span class="ta-count">×${o.count}</span>` : '')
+      + `</button>`;
+  }
+
+  // A spawned agent is neither a tool call nor a human turn — it's a whole
+  // conversation that ran on its own. It gets its own band: heavier than a tool
+  // row, quieter than the user's bubble, carrying the three numbers that say what
+  // the run cost (tools, wall time, tokens) and pointing at its tab.
+  const AGENT_BATCH_MS = 2000;
+  const agentName = sub => sub.agent_name || sub.label || sub.agent_type || 'subagent';
+  const agentTask = sub => sub.agent_description
+    || (sub.preview && sub.preview !== '(no text prompt)' ? sub.preview : '');
+  function agentStats(sub) {
+    const tools = sub.num_tool_calls ?? sub.num_tools ?? 0;
+    const tok = (sub.usage && sub.usage.total) || 0;
+    return [tools ? `${tools} 工具` : '', sub.duration_ms ? durHMS(sub.duration_ms) : '',
+      tok ? `${fmtTok(tok)} tok` : ''].filter(Boolean).join(' · ');
+  }
+
+  // Agents that ran at the same time, as one card. The header carries only what is
+  // structurally true — how many, of what type, at once — and every number stays on
+  // its own agent's line. Tools and tokens would sum honestly; wall time would not
+  // (these overlap, so the batch took about the longest one, not the total), and a
+  // header mixing two sums with one maximum reads as three sums. So it sums nothing.
+  function agentBatch(items) {
+    const names = items.map(i => agentName(i.sub));
+    const uniq = [...new Set(names)];
+    // One type for the whole batch belongs in the header; a row repeating it would
+    // be the same word printed N+1 times. Only a mixed batch needs each row to say
+    // what it is, and only then does the header list the breakdown.
+    const mixed = uniq.length > 1;
+    const title = `并行 · ${items.length} 个 ${mixed ? 'Agent' : esc(uniq[0])}`;
+    const kinds = mixed ? uniq.map(nm => {
+      const c = names.filter(x => x === nm).length;
+      return c > 1 ? `${esc(nm)} ×${c}` : esc(nm);
+    }).join(' · ') : '';
+    const rows = items.map((it, i) => {
+      const last = i === items.length - 1;
+      const task = agentTask(it.sub) || agentName(it.sub);
+      const stats = agentStats(it.sub);
+      return `<button class="abx-row" data-tab="${esc(it.key || '')}" title="${esc(task)}">`
+        + `<span class="abx-tee">${last ? '└' : '├'}</span>`
+        + (mixed ? `<span class="abx-type">${esc(agentName(it.sub))}</span>` : '')
+        + `<span class="abx-task">${esc(task)}</span>`
+        + (stats ? `<span class="abx-stats">${esc(stats)}</span>` : '')
+        + `<span class="ab-go">→</span></button>`;
+    }).join('');
+    return `<div class="agent-batch"><div class="abx-head"><span class="ab-mark">⬡</span>`
+      + `<span class="abx-title">${title}</span>`
+      + (kinds ? `<span class="abx-kinds">${kinds}</span>` : '')
+      + `</div>${rows}</div>`;
+  }
+
+  function agentBand(sub, key) {
+    const name = agentName(sub);
+    const task = agentTask(sub);
+    const stats = agentStats(sub);
+    // Two lines, not one: the middle pane is narrow, and on a single line it is
+    // always the task — the part written for a human — that gets ellipsised away
+    // between the name and the numbers. The task owns line one; the cost owns two.
+    return `<button class="agent-band" data-tab="${esc(key || '')}" title="${esc(task || name)}">`
+      + `<span class="ab-head"><span class="ab-mark">⬡</span>`
+      + `<span class="ab-name">${esc(name)}</span>`
+      + (task ? `<span class="ab-task">（${esc(task)}）</span>` : '') + `</span>`
+      + `<span class="ab-foot"><span class="ab-tee">└</span>`
+      + `<span class="ab-stats">${esc(stats || '无统计数据')}</span>`
+      + `<span class="ab-go">查看对话 →</span></span></button>`;
+  }
+
   function renderConversationSplit(turns, tabKey, subKeyOf) {
     const resultById = new Map();
     for (const t of turns) {
@@ -1225,11 +1429,63 @@
           && !resultById.has(t.tool_use_id)) resultById.set(t.tool_use_id, t);
     }
     const merged = new Set();
-    let mid = '', n = 0;
+    let mid = '', n = 0, gn = 0;
     const cards = new Map();
+    const groups = new Map();
     const anchors = [];
     let open = false, track = '';
-    const flush = () => { if (!open) return; mid += `<div class="agent-track">${track}</div></div>`; track = ''; open = false; };
+    const sink = h => { if (open) track += h; else mid += h; };
+
+    // A run of adjacent rows sharing a merge key collapses to one row + ×N. Each
+    // call keeps its own card, so expanding the run gets you back every result —
+    // nothing is dropped, only stacked.
+    let run = null;
+    const flushRun = () => {
+      if (!run) return;
+      const rows = run; run = null;
+      if (rows.length === 1) { sink(anchorHTML(rows[0])); return; }
+      const gid = `${tabKey}-g${gn++}`;
+      groups.set(gid, rows.map(r => anchorHTML(r)).join(''));
+      sink(anchorHTML(rows[0], { cls: ' ta-group', attr: ` data-group="${gid}"`, count: rows.length }));
+    };
+    // Agents spawned in one assistant message ran at the same time; those spawned
+    // one after another did not. The authoritative signal is the message id, which
+    // the turn schema doesn't carry, so this reads the timestamps instead: a batch
+    // lands ~100ms apart, while a sequential spawn can only happen after the first
+    // agent finished — seconds to minutes later. AGENT_BATCH_MS sits in that gap
+    // with room to spare.
+    let batch = null;
+    const flushBatch = () => {
+      if (!batch) return;
+      const items = batch.items; batch = null;
+      sink(items.length === 1 ? agentBand(items[0].sub, items[0].key) : agentBatch(items));
+    };
+
+    // four kinds of row: an agent (may join the current batch), pre-rendered html
+    // (never merges), an anchor with a merge key (may join the current run), and an
+    // anchor without one (stands alone).
+    const push = r => {
+      if (r.sub) {
+        flushRun();
+        const ms = validTsMs(r.ts);
+        if (batch && ms != null && batch.ms != null && Math.abs(ms - batch.ms) <= AGENT_BATCH_MS) {
+          batch.items.push(r); batch.ms = ms; return;
+        }
+        flushBatch();
+        batch = { ms, items: [r] };
+        return;
+      }
+      flushBatch();
+      if (r.raw !== undefined) { flushRun(); sink(r.raw); return; }
+      if (r.key && run && run[0].key === r.key) { run.push(r); return; }
+      flushRun();
+      if (r.key) run = [r]; else sink(anchorHTML(r));
+    };
+    const flush = () => {
+      flushRun(); flushBatch();
+      if (!open) return;
+      mid += `<div class="agent-track">${track}</div></div>`; track = ''; open = false;
+    };
 
     for (const t of turns) {
       const isUser = t.role === 'user' && (t.kind === 'message' || t.kind === 'slash');
@@ -1240,37 +1496,39 @@
         open = true;
         continue;
       }
-      let html = '';
       if (t.role === 'assistant' && t.kind === 'text') {
-        html = `<div class="msg-asst"><div class="who">claude<span class="ts">${niceTime(t.ts)}</span></div>`
-          + `<div class="text">${mdProse(t.text)}</div></div>`;
+        // No speaker label: the agent is the default voice here, and labelling the
+        // default is noise. The timestamp stays — the gap between two replies is
+        // where you see the agent stall. USER keeps its label; it's the exception.
+        push({ raw: `<div class="msg-asst"><div class="who"><span class="ts">${niceTime(t.ts)}</span></div>`
+          + `<div class="text">${mdProse(t.text)}</div></div>` });
       } else if (t.role === 'assistant' && t.kind === 'thinking') {
-        html = `<details class="blk think"><summary><span class="icon">🧠</span>`
-          + `<span class="lbl">thinking</span></summary>`
-          + `<div class="pane">${clipText(t.text)}</div></details>`;
+        push({ raw: `<details class="blk think"><summary class="ta-row">`
+          + `<span class="ta-name">thinking</span>`
+          + `<span class="ta-arg">${esc(firstLine(t.text))}</span></summary>`
+          + `<div class="pane">${clipText(t.text)}</div></details>` });
       } else if (t.role === 'assistant' && t.kind === 'tool_use') {
-        const ic = TOOL_ICON[t.name] || '⚙';
         const res = t.id ? resultById.get(t.id) : null;
         if (res) merged.add(t.id);
         const subs = Array.isArray(t.subagents) ? t.subagents : [];
         if (subs.length) {
           // one jump-anchor per spawned subagent, switching the top tab (no tool card)
-          html = subs.map(sub => {
-            const k = subKeyOf.get(sub);
-            const name = sub.agent_name || sub.label || sub.agent_type || 'subagent';
-            const desc = sub.agent_description || '';
-            const title = desc || sub.preview || name;
-            return `<button class="tool-anchor agent-jump" data-tab="${esc(k || '')}" title="${esc(title)}">`
-              + `<span class="ta-ic">⬡</span><span class="ta-name">${esc(name)}</span>`
-              + `<span class="ta-arg">${esc(desc || '查看 subagent 对话 →')}</span></button>`;
-          }).join('');
+          for (const sub of subs) push({ sub, key: subKeyOf.get(sub), ts: t.ts });
         } else {
           const tid = `${tabKey}-${n++}`;
+          const isEdit = t.name === 'Edit' || t.name === 'MultiEdit';
+          const stat = t.name === 'Read' ? readStat(res) : '';
           cards.set(tid, { name: t.name, html: toolCard(t, res, tid) });
-          const errCls = res && res.is_error ? ' has-error' : '';
-          html = `<button class="tool-anchor${errCls}" data-tool="${esc(tid)}">`
-            + `<span class="ta-ic">${ic}</span><span class="ta-name">${esc(t.name)}</span>`
-            + `<span class="ta-arg" title="${esc(t.summary)}">${esc(shortenArg(t.name, t.summary))}</span></button>`;
+          push({ key: WRITE_TOOLS.has(t.name) ? null
+              // the stat is part of the row, so two reads of one file only collapse
+              // when they returned the same span
+              : JSON.stringify(['t', t.name, t.summary || '', stat, !!(res && res.is_error)]),
+            cls: res && res.is_error ? ' has-error' : '',
+            name: t.name, title: t.summary,
+            arg: isEdit ? '' : shortenArg(t.name, t.summary),
+            argHTML: isEdit ? editArgHTML(t)
+              : (stat ? `${esc(shortenArg(t.name, t.summary))} <span class="ta-stat">${esc(stat)}</span>` : ''),
+            attr: ` data-tool="${esc(tid)}"` });
         }
       } else if (t.role === 'tool' && t.kind === 'tool_result') {
         if (merged.has(t.tool_use_id)) continue; // already folded into its tool card
@@ -1281,16 +1539,13 @@
           html: `<details class="tcard${errCls}" id="tcard-${tid}"><summary><span class="icon">${t.is_error ? '✖' : '↳'}</span>`
             + `<span class="lbl">result${t.is_error ? ' (error)' : ''}</span></summary>`
             + `<div class="pane${t.is_error ? ' error' : ''}">${clipText(t.content)}</div></details>` });
-        html = `<button class="tool-anchor${errCls}" data-tool="${esc(tid)}">`
-          + `<span class="ta-ic">${t.is_error ? '✖' : '↳'}</span><span class="ta-name">result</span>`
-          + `<span class="ta-arg">${t.is_error ? '(error)' : ''}</span></button>`;
-        if (open) track += html; else mid += html;
-        continue;
+        push({ raw: anchorHTML({ cls: errCls, name: 'result',
+          arg: t.is_error ? '(error)' : firstLine(t.content),
+          attr: ` data-tool="${esc(tid)}"` }) });
       }
-      if (open) track += html; else mid += html;
     }
     flush();
-    return { mid, cards, anchors };
+    return { mid, cards, groups, anchors };
   }
 
   // ——— detail view: tab bar + center conversation + right tool pane ———
@@ -1344,8 +1599,9 @@
     ACTIVE.tab = agent.key;
     ACTIVE.agent = agent;
     const keepRight = ACTIVE.rightMode === 'info' ? 'info' : null;
-    const { mid, cards, anchors } = renderConversationSplit(agent.conv, agent.key, subKeyOf);
+    const { mid, cards, groups, anchors } = renderConversationSplit(agent.conv, agent.key, subKeyOf);
     ACTIVE.cards = cards;
+    ACTIVE.groups = groups;
     if (opts.updateHash !== false) setSessionRoute(ACTIVE.id, agent.key, keepRight);
 
     // tab bar — only shown when there's more than the main agent (subagents exist)
@@ -1613,14 +1869,10 @@
       const blocks = [...centerEl.querySelectorAll('details.blk'), ...rightEl.querySelectorAll('details.tcard')];
       const open = blocks.some(d => !d.open);
       blocks.forEach(d => d.open = open);
+      if (open) expandAllGroups([centerEl]);
       b.textContent = open ? '折叠全部' : '展开全部';
     });
-    // middle tool anchor -> show ONLY that tool's detail on the right
-    centerEl.querySelectorAll('.tool-anchor[data-tool]').forEach(b => b.onclick = () => showTool(b.dataset.tool));
-    // middle agent jump -> switch to that subagent's tab
-    centerEl.querySelectorAll('.tool-anchor.agent-jump[data-tab]').forEach(b => b.onclick = () => {
-      if (ACTIVE && b.dataset.tab) setSessionRoute(ACTIVE.id, b.dataset.tab, null);
-    });
+    bindAnchors(centerEl);
     // highlight the tick for whichever turn is near the top of the viewport
     setupTocSpy();
     // bind the right pane's initial (placeholder) controls
@@ -1629,6 +1881,30 @@
     setupSearch(centerEl.querySelector('.search'), centerEl.querySelector('#search-count'),
       [centerEl, rightEl]);
   }
+
+  // Bind every anchor row inside `root`: tool -> right pane, agent -> tab switch,
+  // collapsed run -> expand in place (then bind whatever that produced).
+  function bindAnchors(root) {
+    root.querySelectorAll('.tool-anchor[data-tool]').forEach(b => b.onclick = () => showTool(b.dataset.tool));
+    root.querySelectorAll('.agent-band[data-tab], .abx-row[data-tab]').forEach(b => b.onclick = () => {
+      if (ACTIVE && b.dataset.tab) setSessionRoute(ACTIVE.id, b.dataset.tab, null);
+    });
+    root.querySelectorAll('.tool-anchor.ta-group[data-group]').forEach(b => b.onclick = () => expandGroup(b));
+  }
+
+  // Replace a collapsed run with its individual rows.
+  function expandGroup(btn) {
+    const html = ACTIVE && ACTIVE.groups && ACTIVE.groups.get(btn.dataset.group);
+    if (!html) return;
+    const holder = document.createElement('div');
+    holder.innerHTML = html;
+    const rows = [...holder.children], parent = btn.parentElement;
+    btn.replaceWith(...rows);
+    if (parent) bindAnchors(parent);
+  }
+
+  const expandAllGroups = roots => roots.forEach(root =>
+    root.querySelectorAll('.tool-anchor.ta-group[data-group]').forEach(expandGroup));
 
   // Walk text nodes in `roots`, wrap matches in <mark class="hit">, open ancestor
   // <details>, and let Enter step through hits. Re-running clears the previous pass.
@@ -1645,6 +1921,7 @@
       clear();
       q = q.trim();
       if (q.length < 2) return;
+      expandAllGroups(roots); // a collapsed run must not hide matches from search
       const ql = q.toLowerCase();
       const targets = [];
       roots.forEach(root => {
