@@ -433,8 +433,39 @@
   .tool-anchor:hover .ta-name { color: var(--clay); }
   .tool-anchor:hover .ta-count { color: var(--clay); }
   .tool-anchor.has-error .ta-name { color: var(--red); }
-  /* a collapsed run of identical calls — click expands it back into its rows */
-  .tool-anchor.ta-group .ta-count { color: var(--gold); }
+  /* ——— a run of adjacent calls to one tool, as a tree ———
+     The name is printed once, in the head; the children carry only their own
+     object, so a run of reads reads as one list of paths instead of the same
+     verb repeated N times. A long run keeps the head as a button and expands
+     back into the same tree on click. */
+  .ta-tree { margin: 2px 0; }
+  .tt-head .ta-count { color: var(--gold); margin-right: 0; }
+  .tt-head .ta-name { color: var(--slate); }
+  .tt-mark { color: var(--subtle); font-size: 10px; flex-shrink: 0; }
+  /* a thinking head stays as quiet as the thinking rows it stands for */
+  .tt-think .ta-name { color: var(--slate-dim); font-weight: 400; }
+  .tt-think .tt-hint { font-style: italic; }
+  /* ——— captioned head: [Bash ×2 ▾] [the thought that led to them] ———
+     Two hit targets on one line, so the row hosts them instead of being a button.
+     The caption is the thinking's own <details>; opening it lays the full text out
+     under the caption, in the column the caption already occupies. */
+  .tt-head.tt-capped { padding: 0; gap: 0; align-items: flex-start; }
+  .tt-toggle { display: flex; gap: 10px; align-items: baseline; flex-shrink: 0;
+               background: none; border: none; cursor: pointer;
+               font: inherit; color: inherit; padding: 3px 10px 3px 10px; }
+  .tt-toggle:hover .ta-name, .tt-toggle:hover .ta-count { color: var(--clay); }
+  .tt-toggle:focus-visible { outline: 2px solid var(--clay); outline-offset: -2px; }
+  /* the wrapper is not a .tool-anchor, so it needs its own error colour */
+  .tt-capped.has-error .ta-name { color: var(--red); }
+  .tt-cap { flex: 1 1 0; min-width: 0; }
+  .tt-cap-sum { color: var(--slate-dim); font-style: italic; padding: 3px 0;
+                overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .tt-cap-sum:hover { color: var(--clay); }
+  details.tt-cap[open] > .tt-cap-sum { color: var(--subtle); }
+  .tt-hint { color: var(--subtle); }
+  /* the tee hugs its own object — it is the indent, not a column of its own */
+  .tt-child { padding-left: 22px; gap: 6px; }
+  .tt-tee { color: var(--subtle); flex-shrink: 0; }
   /* ——— spawned agent: its own tier between a tool row and the user's bubble ———
      A tool row is a bare line; the user's turn is a filled clay bubble. An agent
      sits between: a slate band, boxed but flat, one line, mono. */
@@ -1344,18 +1375,55 @@
       + `</details>`;
   }
 
-  // One anchor row: verb + object, optionally a ×N count when a run was collapsed.
-  // `o.attr` overrides the row's own click target (a collapsed run has none of its
-  // own — it carries data-group instead and expands in place).
+  // One anchor row: verb + object. Inside a tree the verb is already in the head,
+  // so `o.tee` replaces it with the branch glyph — same column, so every child's
+  // object lands on one vertical line.
   function anchorHTML(r, o) {
     o = o || {};
     const attr = o.attr !== undefined ? o.attr : r.attr;
     return `<button class="tool-anchor ta-row${r.cls || ''}${o.cls || ''}"${attr}>`
-      + `<span class="ta-name">${esc(r.name)}</span>`
+      + (o.tee ? `<span class="tt-tee">${o.tee}</span>`
+               : `<span class="ta-name">${esc(r.name)}</span>`)
       + `<span class="ta-arg"${r.title ? ` title="${esc(r.title)}"` : ''}>${r.argHTML || esc(r.arg)}</span>`
-      + (o.count ? `<span class="ta-count">×${o.count}</span>` : '')
       + `</button>`;
   }
+
+  // A run of adjacent rows of one kind becomes a tree: the name once, then one
+  // child per call. Both shapes — head alone and head + children — are the same
+  // button carrying the same group id, so every ×N head toggles and the ▸/▾ says
+  // which way it will go. Up to TREE_INLINE_MAX children start shown; a longer
+  // run starts collapsed, keeping the first object as a hint so the row still
+  // says something.
+  const TREE_INLINE_MAX = 3;
+  const runHasError = rows => rows.some(r => (r.cls || '').includes('has-error'));
+  const rowArg = r => r.argHTML || esc(r.arg);
+  // a row renders itself when it has to (thinking keeps its inline <details>, so
+  // its text stays in the centre column where search can reach it)
+  const renderRow = (r, tee) => r.render ? r.render(tee)
+    : anchorHTML(r, tee ? { cls: ' tt-child', tee } : {});
+  // `cap` is the thinking that ran immediately before this group, standing in as
+  // its title — the thought says why, the rows say what. It is the thinking's own
+  // <details>, moved rather than copied: the head shows its first line, clicking
+  // it opens the full text in place, and nothing is duplicated or re-worded. That
+  // splits the head in two hit targets, so a captioned head is a row holding a
+  // toggle button beside the caption instead of being one button itself.
+  function treeHead(rows, gid, collapsed, cap) {
+    const err = runHasError(rows) ? ' has-error' : '';
+    const inner = `<span class="ta-name">${esc(rows[0].name)}</span>`
+      + `<span class="ta-count">×${rows.length}</span>`
+      + `<span class="tt-mark">${collapsed ? '▸' : '▾'}</span>`;
+    if (!cap) {
+      return `<button class="tool-anchor ta-row tt-head${rows[0].headCls || ''}${err}" data-group="${gid}">`
+        + inner + (collapsed ? `<span class="ta-arg tt-hint">${rowArg(rows[0])} …</span>` : '')
+        + `</button>`;
+    }
+    return `<div class="ta-row tt-head tt-capped${err}">`
+      + `<button class="tool-anchor tt-toggle" data-group="${gid}">${inner}</button>`
+      + cap + `</div>`;
+  }
+  const treeHTML = (rows, gid, cap) => `<div class="ta-tree">${treeHead(rows, gid, false, cap)}`
+    + rows.map((r, i) => renderRow(r, i === rows.length - 1 ? '└' : '├')).join('')
+    + `</div>`;
 
   // A spawned agent is neither a tool call nor a human turn — it's a whole
   // conversation that ran on its own. It gets its own band: heavier than a tool
@@ -1436,17 +1504,40 @@
     let open = false, track = '';
     const sink = h => { if (open) track += h; else mid += h; };
 
-    // A run of adjacent rows sharing a merge key collapses to one row + ×N. Each
-    // call keeps its own card, so expanding the run gets you back every result —
-    // nothing is dropped, only stacked.
+    // A run of adjacent rows sharing a merge key renders as one tree. Each call
+    // keeps its own card and its own child row, so nothing is dropped — the run
+    // only gains a head.
     let run = null;
+    const sinkRun = (rows, cap) => {
+      if (rows.length === 1 && !cap) { sink(renderRow(rows[0])); return; }
+      const gid = `${tabKey}-g${gn++}`;
+      const tree = treeHTML(rows, gid, cap), head = treeHead(rows, gid, true, cap);
+      groups.set(gid, { tree, head });
+      sink(rows.length <= TREE_INLINE_MAX ? tree : head);
+    };
+    // A finished thinking run waits one beat before being written out: if a tool
+    // group starts right after it, its last thought becomes that group's title.
+    // Only the last — the one nearest the tools is the one that describes them,
+    // and the thoughts before it stay where they happened, as their own rows.
+    let pendingThink = null;
+    const flushThink = () => {
+      if (!pendingThink) return;
+      const rows = pendingThink; pendingThink = null;
+      sinkRun(rows, null);
+    };
     const flushRun = () => {
       if (!run) return;
       const rows = run; run = null;
-      if (rows.length === 1) { sink(anchorHTML(rows[0])); return; }
-      const gid = `${tabKey}-g${gn++}`;
-      groups.set(gid, rows.map(r => anchorHTML(r)).join(''));
-      sink(anchorHTML(rows[0], { cls: ' ta-group', attr: ` data-group="${gid}"`, count: rows.length }));
+      if (rows[0].key === 'think') { flushThink(); pendingThink = rows; return; }
+      // A lone call is not a group, so there is nothing for a title to sit on;
+      // it keeps its own line and the thought keeps its own.
+      let cap = null;
+      if (pendingThink && rows.length > 1) {
+        cap = pendingThink[pendingThink.length - 1].cap;
+        pendingThink = pendingThink.length > 1 ? pendingThink.slice(0, -1) : null;
+      }
+      flushThink();
+      sinkRun(rows, cap);
     };
     // Agents spawned in one assistant message ran at the same time; those spawned
     // one after another did not. The authoritative signal is the message id, which
@@ -1466,7 +1557,7 @@
     // anchor without one (stands alone).
     const push = r => {
       if (r.sub) {
-        flushRun();
+        flushRun(); flushThink();
         const ms = validTsMs(r.ts);
         if (batch && ms != null && batch.ms != null && Math.abs(ms - batch.ms) <= AGENT_BATCH_MS) {
           batch.items.push(r); batch.ms = ms; return;
@@ -1476,13 +1567,15 @@
         return;
       }
       flushBatch();
-      if (r.raw !== undefined) { flushRun(); sink(r.raw); return; }
+      if (r.raw !== undefined) { flushRun(); flushThink(); sink(r.raw); return; }
       if (r.key && run && run[0].key === r.key) { run.push(r); return; }
       flushRun();
-      if (r.key) run = [r]; else sink(anchorHTML(r));
+      // a keyed row opens a run, which may still claim the pending thought; a
+      // keyless one (a write) never groups, so the thought is written out now
+      if (r.key) run = [r]; else { flushThink(); sink(anchorHTML(r)); }
     };
     const flush = () => {
-      flushRun(); flushBatch();
+      flushRun(); flushThink(); flushBatch();
       if (!open) return;
       mid += `<div class="agent-track">${track}</div></div>`; track = ''; open = false;
     };
@@ -1503,10 +1596,18 @@
         push({ raw: `<div class="msg-asst"><div class="who"><span class="ts">${niceTime(t.ts)}</span></div>`
           + `<div class="text">${mdProse(t.text)}</div></div>` });
       } else if (t.role === 'assistant' && t.kind === 'thinking') {
-        push({ raw: `<details class="blk think"><summary class="ta-row">`
-          + `<span class="ta-name">thinking</span>`
-          + `<span class="ta-arg">${esc(firstLine(t.text))}</span></summary>`
-          + `<div class="pane">${clipText(t.text)}</div></details>` });
+        // thinking merges like a tool run: a stretch of consecutive thinking is one
+        // stretch of thinking, and printing the word four times said nothing the
+        // ×4 doesn't. It keeps its own <details> either way, so the text stays
+        // inline in the centre column — expandable, searchable, never relocated.
+        push({ key: 'think', name: 'thinking', arg: firstLine(t.text), headCls: ' tt-think',
+          cap: `<details class="blk think tt-cap"><summary class="tt-cap-sum" title="${esc(firstLine(t.text))}">`
+            + `${esc(firstLine(t.text))}</summary><div class="pane">${clipText(t.text)}</div></details>`,
+          render: tee => `<details class="blk think"><summary class="ta-row${tee ? ' tt-child' : ''}">`
+            + (tee ? `<span class="tt-tee">${tee}</span>`
+                   : `<span class="ta-name">thinking</span>`)
+            + `<span class="ta-arg">${esc(firstLine(t.text))}</span></summary>`
+            + `<div class="pane">${clipText(t.text)}</div></details>` });
       } else if (t.role === 'assistant' && t.kind === 'tool_use') {
         const res = t.id ? resultById.get(t.id) : null;
         if (res) merged.add(t.id);
@@ -1519,10 +1620,10 @@
           const isEdit = t.name === 'Edit' || t.name === 'MultiEdit';
           const stat = t.name === 'Read' ? readStat(res) : '';
           cards.set(tid, { name: t.name, html: toolCard(t, res, tid) });
-          push({ key: WRITE_TOOLS.has(t.name) ? null
-              // the stat is part of the row, so two reads of one file only collapse
-              // when they returned the same span
-              : JSON.stringify(['t', t.name, t.summary || '', stat, !!(res && res.is_error)]),
+          // The name alone is the key: a run of reads is one act of reading, whatever
+          // files it touched, and grouping on the object too meant the common case —
+          // five different paths in a row — never grouped at all.
+          push({ key: WRITE_TOOLS.has(t.name) ? null : t.name,
             cls: res && res.is_error ? ' has-error' : '',
             name: t.name, title: t.summary,
             arg: isEdit ? '' : shortenArg(t.name, t.summary),
@@ -1889,22 +1990,29 @@
     root.querySelectorAll('.agent-band[data-tab], .abx-row[data-tab]').forEach(b => b.onclick = () => {
       if (ACTIVE && b.dataset.tab) setSessionRoute(ACTIVE.id, b.dataset.tab, null);
     });
-    root.querySelectorAll('.tool-anchor.ta-group[data-group]').forEach(b => b.onclick = () => expandGroup(b));
+    root.querySelectorAll('.tool-anchor[data-group]').forEach(b => b.onclick = () => toggleGroup(b));
   }
 
   // Replace a collapsed run with its individual rows.
-  function expandGroup(btn) {
-    const html = ACTIVE && ACTIVE.groups && ACTIVE.groups.get(btn.dataset.group);
-    if (!html) return;
+  // A head inside a .ta-tree is showing its children, so it collapses; a bare head
+  // expands. Either way the whole shape is swapped for the other one.
+  function toggleGroup(btn) {
+    const g = ACTIVE && ACTIVE.groups && ACTIVE.groups.get(btn.dataset.group);
+    if (!g) return;
+    // a captioned head is a wrapper row, not the button itself — swap the wrapper
+    // or its caption goes with it
+    const tree = btn.closest('.ta-tree');
+    const target = tree || btn.closest('.tt-head') || btn, parent = target.parentElement;
     const holder = document.createElement('div');
-    holder.innerHTML = html;
-    const rows = [...holder.children], parent = btn.parentElement;
-    btn.replaceWith(...rows);
+    holder.innerHTML = tree ? g.head : g.tree;
+    target.replaceWith(...holder.children);
     if (parent) bindAnchors(parent);
   }
 
+  const collapsedHeads = root => [...root.querySelectorAll('.tool-anchor[data-group]')]
+    .filter(b => !b.closest('.ta-tree'));
   const expandAllGroups = roots => roots.forEach(root =>
-    root.querySelectorAll('.tool-anchor.ta-group[data-group]').forEach(expandGroup));
+    collapsedHeads(root).forEach(toggleGroup));
 
   // Walk text nodes in `roots`, wrap matches in <mark class="hit">, open ancestor
   // <details>, and let Enter step through hits. Re-running clears the previous pass.
