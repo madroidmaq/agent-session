@@ -193,6 +193,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate,
         if pendingInject { pendingInject = false; inject() }
     }
 
+    // 会话正文中的 Markdown 链接使用 target="_blank"。WKWebView 默认不会为它
+    // 创建新窗口，因此在原生壳中把用户点击的网页链接交给系统默认浏览器处理。
+    // 仅拦截 http(s)，保留 #turn-* 等页面内锚点在当前 WebView 中正常跳转。
+    func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
+                 decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+        guard navigationAction.navigationType == .linkActivated,
+              let url = navigationAction.request.url,
+              let scheme = url.scheme?.lowercased(),
+              scheme == "http" || scheme == "https" else {
+            decisionHandler(.allow)
+            return
+        }
+
+        NSWorkspace.shared.open(url)
+        decisionHandler(.cancel)
+    }
+
     // MARK: - 数据流
 
     private func reloadInBackground(changedPaths: [String]? = nil) {
