@@ -9,6 +9,9 @@ import { dirname, join } from 'node:path';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const tplPath = join(here, '../Sources/AgentSession/Resources/template.html');
+const demoSource = new Set(['claude', 'codex', 'grok']).has(process.env.AGENT_SESSION_DEMO_SOURCE)
+  ? process.env.AGENT_SESSION_DEMO_SOURCE
+  : 'claude';
 
 // ——— 1. 英文 mock 数据（脱敏、虚构项目，体现核心功能）———
 const clip = (text) => ({ text, clipped: false });
@@ -82,7 +85,7 @@ const mainTurns = [
 ];
 
 const session = (o) => ({
-  cwd: null, git_branch: null, skills: [], num_subagents: 0,
+  source: demoSource, cwd: null, git_branch: null, skills: [], num_subagents: 0,
   turns: [], orphan_subagents: [], duration_ms: 0,
   num_assistant_msgs: 0, ...o,
 });
@@ -142,7 +145,7 @@ const REPLACEMENTS = [
   ['全部项目', 'All projects'], ['时间范围', 'Time range'],
   ['会话信息（Token / 缓存）', 'Session info (tokens / cache)'],
   ['查看 skill 内容', 'View skill content'], ['主 Agent', 'Main Agent'],
-  ['查看 subagent 对话 →', 'View subagent thread →'],
+  ['查看对话 →', 'View thread →'], ['无统计数据', 'no stats'],
   ['这个 Agent 没有可显示的对话。', 'This agent has no conversation to show.'],
   ['展开全部', 'Expand all'], ['折叠全部', 'Collapse all'], ['ⓘ 详细', 'ⓘ Details'],
   ['目录 · ', 'Outline · '], ['轮对话', 'turns'],
@@ -170,12 +173,18 @@ const REPLACEMENTS = [
   ['已复制', 'Copied'], ['复制', 'Copy'],
   ['… 已截断，原文 ', '… truncated, '], [' 字符</span>', ' chars</span>'],
   [' 字符</div>', ' chars</div>'],
-  [' 轮 · ', ' turns · '], [' 工具', ' tools'], ['时间', 'Time'],
+  [' 轮 · ', ' turns · '], [' 工具', ' tools'],
+  // 顺序有意义：'未知时间' 必须先于 '时间' 被替换，否则只剩 '未知Time'。
+  ['未知时间', 'Unknown time'], ['时间', 'Time'],
+  [' 行`', ' lines`'],
   ['session-viewer', 'AgentSession'],
 ];
 
 // ——— 3. 组装 ———
 let html = readFileSync(tplPath, 'utf8');
+// README 截图默认使用 Claude Code；本地可用 AGENT_SESSION_DEMO_SOURCE=codex/grok
+// 验证来源特定的 transcript grammar。原生 App 则由 UserDefaults + session.source 驱动。
+html = html.replace('<html lang="zh">', `<html lang="en" class="ui-${demoSource}">`);
 for (const [from, to] of REPLACEMENTS) html = html.split(from).join(to);
 
 const json = Buffer.from(JSON.stringify(DATA), 'utf8').toString('base64');
@@ -186,9 +195,12 @@ html = html.replace(
 // 截图辅助：进入主会话详情，并自动在右栏展开 Edit 工具卡片。
 html = html.replace('</body>', `<script>
   window.addEventListener('load', () => setTimeout(() => {
-    const anchors = [...document.querySelectorAll('.tool-anchor[data-tool]')];
-    const edit = anchors.find(a => a.querySelector('.ta-name')?.textContent === 'Edit');
-    (edit || anchors[0])?.click();
+    document.querySelector('.srow[data-id]')?.click();
+    setTimeout(() => {
+      const anchors = [...document.querySelectorAll('.tool-anchor[data-tool]')];
+      const edit = anchors.find(a => a.querySelector('.ta-name')?.textContent === 'Edit');
+      (edit || anchors[0])?.click();
+    }, 80);
   }, 120));
 </script></body>`);
 

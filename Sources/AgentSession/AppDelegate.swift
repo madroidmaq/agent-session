@@ -2,6 +2,30 @@ import Cocoa
 import WebKit
 import UniformTypeIdentifiers
 
+enum UIStyle: String, CaseIterable {
+    case auto
+    case claude
+    case codex
+    case grok
+
+    static let defaultsKey = "AgentSessionUIStyle"
+
+    static func resolve(_ rawValue: String?) -> UIStyle {
+        rawValue.flatMap(UIStyle.init(rawValue:)) ?? .auto
+    }
+
+    var cssClass: String { "ui-\(rawValue)" }
+
+    var displayName: String {
+        switch self {
+        case .auto: "自动（跟随会话）"
+        case .claude: "Claude Code"
+        case .codex: "Codex"
+        case .grok: "Grok 预览"
+        }
+    }
+}
+
 final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate,
                          NSToolbarDelegate, WKScriptMessageHandler {
     private var window: NSWindow!
@@ -87,8 +111,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate,
         // 告诉页面它运行在原生壳里：CSS 用 `html.native` 拍平网页自带的模拟窗口外壳
         // （红绿灯圆点 / 圆角卡片 / 阴影 / 假标题栏），避免“窗口套窗口”。
         let config = WKWebViewConfiguration()
+        let initialStyle = currentUIStyle()
         config.userContentController.addUserScript(WKUserScript(
-            source: "document.documentElement.classList.add('native');",
+            source: "document.documentElement.classList.add('native', '\(initialStyle.cssClass)');",
             injectionTime: .atDocumentStart, forMainFrameOnly: true))
         // 侧栏的时间范围 / 项目下拉通过这条桥回调，更新 scope 后重新加载摘要索引。
         config.userContentController.add(self, name: "scope")
@@ -188,6 +213,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate,
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         webReady = true
         templateLoadInFlight = false
+        injectUIStyle()
         injectPaneLayout()
         if let action = pendingAfterLoad { pendingAfterLoad = nil; action(); return }
         if pendingInject { pendingInject = false; inject() }
@@ -313,6 +339,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate,
         let changedArg = changedSessionIds.map { jsJSONLiteral(Array($0).sorted()) } ?? "null"
         webView.evaluateJavaScript("window.__agentSession && window.__agentSession.loadIndex(\(jsStringLiteral(json)), \(changedArg));",
                                    completionHandler: nil)
+    }
+
+    private func currentUIStyle() -> UIStyle {
+        UIStyle.resolve(UserDefaults.standard.string(forKey: UIStyle.defaultsKey))
+    }
+
+    private func injectUIStyle() {
+        guard webReady else { return }
+        let style = currentUIStyle().rawValue
+        webView.evaluateJavaScript(
+            "window.__agentSession && window.__agentSession.setUIStyle && window.__agentSession.setUIStyle(\(jsStringLiteral(style)));",
+            completionHandler: nil)
     }
 
     private func clamp(_ value: Int, min minValue: Int, max maxValue: Int) -> Int {
@@ -546,6 +584,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate,
         }
     }
 
+    @objc func selectUIStyle(_ sender: NSMenuItem) {
+        guard let rawValue = sender.representedObject as? String,
+              let style = UIStyle(rawValue: rawValue) else { return }
+        UserDefaults.standard.set(style.rawValue, forKey: UIStyle.defaultsKey)
+        sender.menu?.items.forEach { item in
+            item.state = (item.representedObject as? String) == style.rawValue ? .on : .off
+        }
+        injectUIStyle()
+    }
+
     @objc func showAbout() {
         let info = Bundle.main.infoDictionary ?? [:]
         let version = info["CFBundleShortVersionString"] as? String ?? "未知"
@@ -653,6 +701,20 @@ func buildMainMenu(target: AppDelegate) -> NSMenu {
     fileMenu.addItem(openFileItem)
     fileMenu.addItem(backItem)
     fileItem.submenu = fileMenu
+
+    let appearanceItem = NSMenuItem()
+    main.addItem(appearanceItem)
+    let appearanceMenu = NSMenu(title: "外观")
+    let currentStyle = UIStyle.resolve(UserDefaults.standard.string(forKey: UIStyle.defaultsKey))
+    for style in UIStyle.allCases {
+        let item = NSMenuItem(title: style.displayName,
+                              action: #selector(AppDelegate.selectUIStyle(_:)), keyEquivalent: "")
+        item.target = target
+        item.representedObject = style.rawValue
+        item.state = style == currentStyle ? .on : .off
+        appearanceMenu.addItem(item)
+    }
+    appearanceItem.submenu = appearanceMenu
 
     let editItem = NSMenuItem()
     main.addItem(editItem)
